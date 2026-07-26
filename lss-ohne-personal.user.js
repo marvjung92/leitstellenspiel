@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Fahrzeuge ohne festes Personal
 // @namespace    http://tampermonkey.net/
-// @version      1.02
+// @version      1.03
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @description  Listet alle eigenen Fahrzeuge auf, denen KEIN Personal fest zugewiesen ist ("Zugewiesenes Personal: 0" auf der Personalzuweisungs-Seite). Prüft die Fahrzeuge im Hintergrund, mit Drosselung. Panel + Navbar-Badge.
@@ -15,9 +15,18 @@
     if (window.top !== window.self) return;
 
     const CONFIG = {
-        fetchDelayMs: 700,      // Pause zwischen zwei Fahrzeug-Seiten-Abrufen (Server schonen)
-        maxChecksPerRun: 300,   // Sicherheitsobergrenze je Durchlauf
-        cacheMs: 6 * 3600000,   // Ergebnis je Fahrzeug so lange als gültig ansehen (kein Dauer-Abruf)
+        concurrency: 4,         // parallele Abrufe (statt einzeln nacheinander) -> ~4x schneller
+        fetchDelayMs: 150,      // kurze Pause pro Anfrage innerhalb eines Workers
+        maxChecksPerRun: 5000,  // reicht für den gesamten Fuhrpark
+        cacheMs: 12 * 3600000,  // Ergebnis so lange gültig
+        // Fahrzeugtyp-IDs, die KONSTRUKTIV kein eigenes Personal haben (Anhänger, Abrollbehälter,
+        // Aggregate). Diese werden NIE per Seitenabruf geprüft und tauchen nicht in der Liste auf.
+        // IDs bitte ergänzen (aus /api/vehicles, Feld vehicle_type). Beispiele werden vom Nutzer geliefert.
+        noPersonnelTypeIds: [
+            // <<< HIER Typ-IDs eintragen, z.B. AB-Sonderlöschmittel, Anh Sonderlöschmittel, NEA50 >>>
+        ],
+        // Zusätzlich Namensmuster als Netz (case-egal), falls eine Typ-ID mal fehlt:
+        noPersonnelNamePatterns: ['anh ', 'anhänger', 'ab-', 'ab ', 'nea', 'dekon-p', 'gw-anh', 'sata', 'fwa'],
     };
 
     // Cache: vehicleId -> { assigned: <zahl>, name, building, ts }
@@ -38,7 +47,7 @@
         }
     }
 
-    // Alle eigenen Fahrzeuge (id, caption, building) via /api/vehicles.
+    // Alle eigenen Fahrzeuge (id, caption, building, typeId) via /api/vehicles.
     async function loadVehicles() {
         const res = await fetch('/api/vehicles', { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) throw new Error(`/api/vehicles HTTP ${res.status}`);
@@ -48,7 +57,15 @@
             name: v.caption || `#${v.id}`,
             building: v.building_name || v.building || '',
             typeId: Number(v.vehicle_type),
+            typeName: v.vehicle_type_caption || '',
         }));
+    }
+
+    // Kann dieses Fahrzeug konstruktiv KEIN eigenes Personal haben? (Anhänger/AB/Aggregat)
+    function cannotHavePersonnel(v) {
+        if (CONFIG.noPersonnelTypeIds.includes(v.typeId)) return true;
+        const hay = ((v.name || '') + ' ' + (v.typeName || '')).toLowerCase();
+        return CONFIG.noPersonnelNamePatterns.some(p => hay.includes(p));
     }
 
     // Personalzuweisungs-Seite eines Fahrzeugs prüfen: wie viel Personal ist FEST zugewiesen?
@@ -75,35 +92,50 @@
         running = true;
         const $status = panel.querySelector('#np-status');
         try {
-            if (force) { results = {}; persist(); } // Shift+⟳: alte Ergebnisse verwerfen, alles frisch prüfen
+            if (force) { results = {}; persist(); } // alte Ergebnisse verwerfen, alles frisch prüfen
             $status.innerHTML = force ? 'Prüfe ALLE Fahrzeuge neu…' : 'Lade Fahrzeugliste…';
             const vehicles = await loadVehicles();
             const now = Date.now();
-            const due = vehicles.filter(v => force || !results[v.id] || now - results[v.id].ts > CONFIG.cacheMs)
+            // Anhänger/AB/Aggregate NICHT per Seite prüfen – konstruktiv ohne Personal, aus Liste raus.
+            const checkable = vehicles.filter(v => !cannotHavePersonnel(v));
+            const excluded = vehicles.length - checkable.length;
+            const due = checkable.filter(v => force || !results[v.id] || now - results[v.id].ts > CONFIG.cacheMs)
                                  .slice(0, CONFIG.maxChecksPerRun);
             let done = 0;
-            for (const v of due) {
-                try { await checkVehicle(v); } catch (e) { /* nächster */ }
-                done++;
-                $status.innerHTML = `Prüfe Fahrzeuge… <b>${done}/${due.length}</b>`;
-                if (done % 10 === 0) { persist(); render(panel, vehicles); }
-                await new Promise(r => setTimeout(r, CONFIG.fetchDelayMs));
+            const t0 = Date.now();
+            // Parallele Worker-Pool: mehrere Abrufe gleichzeitig.
+            let idx = 0;
+            async function worker() {
+                while (idx < due.length) {
+                    const v = due[idx++];
+                    try { await checkVehicle(v); } catch (e) { /* nächster */ }
+                    done++;
+                    if (done % 15 === 0 || done === due.length) {
+                        const rate = done / Math.max(1, (Date.now() - t0) / 1000);
+                        const eta = rate > 0 ? Math.round((due.length - done) / rate) : 0;
+                        $status.innerHTML = `Prüfe… <b>${done}/${due.length}</b> · ~${eta}s übrig`;
+                        persist(); render(panel, vehicles);
+                    }
+                    if (CONFIG.fetchDelayMs) await new Promise(r => setTimeout(r, CONFIG.fetchDelayMs));
+                }
             }
+            await Promise.all(Array.from({ length: Math.max(1, CONFIG.concurrency) }, worker));
             persist();
-            render(panel, vehicles);
+            render(panel, vehicles, excluded);
         } catch (e) {
             $status.innerHTML = `<span style="color:#f38ba8;">Fehler: ${e.message}</span>`;
         } finally { running = false; }
     }
 
-    function render(panel, vehicles) {
+    function render(panel, vehicles, excluded) {
         const $status = panel.querySelector('#np-status');
         const $list = panel.querySelector('#np-list');
-        // Nur Fahrzeuge, die geprüft wurden UND 0 festes Personal haben
-        const checked = vehicles.filter(v => results[v.id]);
+        const checkable = vehicles.filter(v => !cannotHavePersonnel(v));
+        const checked = checkable.filter(v => results[v.id]);
         const without = checked.filter(v => (results[v.id].assigned || 0) === 0);
+        const exTxt = (excluded != null ? excluded : (vehicles.length - checkable.length));
         $status.innerHTML = `<b style="color:#f9e2af;">${without.length}</b> Fahrzeug(e) ohne festes Personal `
-            + `<span style="color:#9399b2;">(${checked.length}/${vehicles.length} geprüft)</span>`;
+            + `<span style="color:#9399b2;">(${checked.length}/${checkable.length} geprüft, ${exTxt} Anhänger/AB übersprungen)</span>`;
         if (!without.length) {
             $list.innerHTML = checked.length
                 ? '<div style="color:#a6e3a1;padding:8px;">Alle geprüften Fahrzeuge haben festes Personal. 🎉</div>'
