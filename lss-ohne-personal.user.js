@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Fahrzeuge ohne festes Personal
 // @namespace    http://tampermonkey.net/
-// @version      1.01
+// @version      1.02
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @description  Listet alle eigenen Fahrzeuge auf, denen KEIN Personal fest zugewiesen ist ("Zugewiesenes Personal: 0" auf der Personalzuweisungs-Seite). Prüft die Fahrzeuge im Hintergrund, mit Drosselung. Panel + Navbar-Badge.
@@ -22,14 +22,19 @@
 
     // Cache: vehicleId -> { assigned: <zahl>, name, building, ts }
     const RES_KEY = 'nopers_results';
+    const RES_VER = 2; // hochzählen, wenn sich die Erkennungslogik ändert -> alter Cache wird verworfen
     let results = {};
-    try { results = JSON.parse(localStorage.getItem(RES_KEY) || '{}') || {}; } catch (e) { results = {}; }
+    try {
+        const raw = JSON.parse(localStorage.getItem(RES_KEY) || 'null');
+        if (raw && raw.__ver === RES_VER) { results = raw.data || {}; }
+        else { results = {}; } // andere/fehlende Version -> mit falscher Logik erzeugte Alt-Daten ignorieren
+    } catch (e) { results = {}; }
     function persist() {
-        try { localStorage.setItem(RES_KEY, JSON.stringify(results)); return true; }
+        const payload = JSON.stringify({ __ver: RES_VER, data: results });
+        try { localStorage.setItem(RES_KEY, payload); return true; }
         catch (e) {
-            // Notfall: fremde Fresser opfern, dann erneut
             for (const k of ['ad_log_buffer', 'ad_audit_buffer', 'tv_send_log']) { try { localStorage.removeItem(k); } catch (x) {} }
-            try { localStorage.setItem(RES_KEY, JSON.stringify(results)); return true; } catch (x) { return false; }
+            try { localStorage.setItem(RES_KEY, payload); return true; } catch (x) { return false; }
         }
     }
 
@@ -70,7 +75,8 @@
         running = true;
         const $status = panel.querySelector('#np-status');
         try {
-            $status.innerHTML = 'Lade Fahrzeugliste…';
+            if (force) { results = {}; persist(); } // Shift+⟳: alte Ergebnisse verwerfen, alles frisch prüfen
+            $status.innerHTML = force ? 'Prüfe ALLE Fahrzeuge neu…' : 'Lade Fahrzeugliste…';
             const vehicles = await loadVehicles();
             const now = Date.now();
             const due = vehicles.filter(v => force || !results[v.id] || now - results[v.id].ts > CONFIG.cacheMs)
@@ -135,7 +141,8 @@
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <b style="font-size:14px;">👤 Fahrzeuge ohne festes Personal</b>
                 <div>
-                    <button id="np-scan" title="Prüfen (Shift+Klick = alle neu prüfen, Cache ignorieren)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">⟳ Prüfen</button>
+                    <button id="np-scan" title="Nur neue/veraltete Fahrzeuge prüfen (nutzt Cache)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">⟳ Prüfen</button>
+                    <button id="np-rescan" title="Alles neu prüfen (Cache löschen)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#f9e2af;cursor:pointer;font-size:13px;padding:2px 7px;">⟳⟳ Alle neu</button>
                     <button id="np-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
                 </div>
             </div>
@@ -146,6 +153,7 @@
         document.body.appendChild(panel);
         panel.querySelector('#np-close').onclick = () => panel.remove();
         panel.querySelector('#np-scan').onclick = (e) => scan(panel, e.shiftKey);
+        panel.querySelector('#np-rescan').onclick = () => scan(panel, true);
         // Sofort das zeigen, was schon im Cache ist
         loadVehicles().then(vs => render(panel, vs)).catch(() => {});
     }
