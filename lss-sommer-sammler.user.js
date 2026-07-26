@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Sommer-Sammler (Sonnenblumen)
 // @namespace    http://tampermonkey.net/
-// @version      1.12
+// @version      1.13
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-sommer-sammler.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-sommer-sammler.user.js
 // @description  Sammelt automatisch die Sommer-Event-Objekte (Sonnenblume 🌻) aus Einsatz-Headern ein. Zeigt an, bei welchen Einsätzen gesammelt wurde und wie viele insgesamt. Panel + Navbar-Badge.
@@ -12,6 +12,78 @@
 
 (function () {
     'use strict';
+    // ==== Gemeinsames Analyse-Menü (geteilt über alle Analyse-Skripte) ====
+    // Das erste Skript, das lädt, erstellt das 🛠️-Dropdown in der Navbar. Jedes Skript registriert
+    // seinen Eintrag über window.lssToolsMenu.add(id, label, onClick). Reihenfolge stabil nach 'order'.
+    function ensureToolsMenu() {
+        if (window.lssToolsMenu) return window.lssToolsMenu;
+        const api = {
+            entries: [],
+            add(id, label, onClick, order = 100) {
+                if (this.entries.some(e => e.id === id)) return;
+                this.entries.push({ id, label, onClick, order });
+                this.entries.sort((a, b) => a.order - b.order);
+                this.rebuild();
+            },
+            rebuild() {
+                const menu = document.getElementById('lss-tools-dropdown');
+                if (!menu) return;
+                menu.innerHTML = '';
+                for (const e of this.entries) {
+                    const item = document.createElement('a');
+                    item.href = '#';
+                    item.textContent = e.label;
+                    item.style.cssText = 'display:block;padding:7px 14px;color:#cdd6f4;text-decoration:none;white-space:nowrap;font-size:13px;';
+                    item.onmouseenter = () => item.style.background = '#313244';
+                    item.onmouseleave = () => item.style.background = 'transparent';
+                    item.onclick = (ev) => { ev.preventDefault(); menu.style.display = 'none'; e.onClick(); };
+                    menu.appendChild(item);
+                }
+            },
+            mount() {
+                if (document.getElementById('lss-tools-openbtn')) return;
+                const navUl = document.querySelector('#main_navbar #navbar-main-collapse ul.navbar-nav');
+                const openMenu = (anchorRect) => {
+                    const menu = document.getElementById('lss-tools-dropdown');
+                    if (!menu) return;
+                    const show = menu.style.display === 'none' || !menu.style.display;
+                    menu.style.display = show ? 'block' : 'none';
+                    if (show && anchorRect) { menu.style.top = (anchorRect.bottom + 4) + 'px'; menu.style.right = Math.max(8, window.innerWidth - anchorRect.right) + 'px'; }
+                };
+                // Dropdown-Container (fixed, an den Button angedockt)
+                const dd = document.createElement('div');
+                dd.id = 'lss-tools-dropdown';
+                dd.style.cssText = 'position:fixed;display:none;z-index:100000;background:#1e1e2e;border:1px solid #45475a;border-radius:8px;padding:4px 0;box-shadow:0 6px 24px rgba(0,0,0,.4);min-width:190px;';
+                document.body.appendChild(dd);
+                // Schließen bei Klick außerhalb
+                document.addEventListener('click', (ev) => {
+                    const btn = document.getElementById('lss-tools-openbtn');
+                    if (dd.style.display === 'block' && !dd.contains(ev.target) && btn && !btn.contains(ev.target)) dd.style.display = 'none';
+                });
+                if (navUl) {
+                    const li = document.createElement('li');
+                    li.id = 'lss-tools-openbtn';
+                    li.innerHTML = `<a href="#" title="Analyse-Tools"><span style="font-size:15px;">🛠️</span></a>`;
+                    li.querySelector('a').onclick = (ev) => { ev.preventDefault(); openMenu(li.getBoundingClientRect()); };
+                    navUl.insertBefore(li, navUl.firstChild);
+                } else {
+                    const btn = document.createElement('button');
+                    btn.id = 'lss-tools-openbtn';
+                    btn.textContent = '🛠️ Tools';
+                    btn.style.cssText = 'position:fixed;top:150px;right:20px;z-index:99998;padding:8px 12px;background:#f9e2af;color:#1e1e2e;border:none;border-radius:8px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.3);';
+                    btn.onclick = () => openMenu(btn.getBoundingClientRect());
+                    document.body.appendChild(btn);
+                }
+                this.rebuild();
+            },
+        };
+        window.lssToolsMenu = api;
+        // Menü aufbauen, sobald DOM bereit ist
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => api.mount());
+        else api.mount();
+        return api;
+    }
+
     if (window.top !== window.self) return; // nur Hauptfenster
 
     const CONFIG = {
@@ -205,8 +277,11 @@
     function total() { return collectLog.length; }
 
     function updateBadge() {
-        const b = document.getElementById('sommer-badge-count');
-        if (b) b.textContent = total();
+        // Zähler steht jetzt im Menü-Eintrag – Label aktualisieren.
+        if (window.lssToolsMenu) {
+            const e = window.lssToolsMenu.entries.find(x => x.id === 'sommer-badge');
+            if (e) { e.label = `🌻 Sommer-Sammler (${total()})`; window.lssToolsMenu.rebuild(); }
+        }
     }
 
     function fmtDate(ts) {
@@ -276,22 +351,8 @@
     }
 
     function addBadge() {
-        if (document.getElementById('sommer-badge')) return;
-        const navUl = document.querySelector('#main_navbar #navbar-main-collapse ul.navbar-nav');
-        if (navUl) {
-            const li = document.createElement('li');
-            li.id = 'sommer-badge';
-            li.innerHTML = `<a href="#" title="Sommer-Sammler: gesammelte 🌻 ansehen"><span style="font-size:15px;">🌻</span> <span id="sommer-badge-count" style="font-weight:600;">${total()}</span></a>`;
-            li.querySelector('a').onclick = (e) => { e.preventDefault(); buildPanel(); };
-            navUl.insertBefore(li, navUl.firstChild);
-        } else {
-            const btn = document.createElement('button');
-            btn.id = 'sommer-badge';
-            btn.innerHTML = `🌻 <span id="sommer-badge-count">${total()}</span>`;
-            btn.style.cssText = 'position:fixed;top:150px;right:20px;z-index:99998;padding:8px 12px;background:#f9e2af;color:#1e1e2e;border:none;border-radius:8px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.3);';
-            btn.onclick = buildPanel;
-            document.body.appendChild(btn);
-        }
+        const menu = ensureToolsMenu();
+        menu.add('sommer-badge', `🌻 Sommer-Sammler (${total()})`, () => buildPanel(), 40);
     }
 
     // ---- Start ----

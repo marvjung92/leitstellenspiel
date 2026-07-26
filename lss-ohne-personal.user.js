@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Fahrzeuge ohne festes Personal
 // @namespace    http://tampermonkey.net/
-// @version      1.05
+// @version      1.06
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @description  Listet alle eigenen Fahrzeuge auf, denen KEIN Personal fest zugewiesen ist ("Zugewiesenes Personal: 0" auf der Personalzuweisungs-Seite). Prüft die Fahrzeuge im Hintergrund, mit Drosselung. Panel + Navbar-Badge.
@@ -12,6 +12,78 @@
 
 (function () {
     'use strict';
+    // ==== Gemeinsames Analyse-Menü (geteilt über alle Analyse-Skripte) ====
+    // Das erste Skript, das lädt, erstellt das 🛠️-Dropdown in der Navbar. Jedes Skript registriert
+    // seinen Eintrag über window.lssToolsMenu.add(id, label, onClick). Reihenfolge stabil nach 'order'.
+    function ensureToolsMenu() {
+        if (window.lssToolsMenu) return window.lssToolsMenu;
+        const api = {
+            entries: [],
+            add(id, label, onClick, order = 100) {
+                if (this.entries.some(e => e.id === id)) return;
+                this.entries.push({ id, label, onClick, order });
+                this.entries.sort((a, b) => a.order - b.order);
+                this.rebuild();
+            },
+            rebuild() {
+                const menu = document.getElementById('lss-tools-dropdown');
+                if (!menu) return;
+                menu.innerHTML = '';
+                for (const e of this.entries) {
+                    const item = document.createElement('a');
+                    item.href = '#';
+                    item.textContent = e.label;
+                    item.style.cssText = 'display:block;padding:7px 14px;color:#cdd6f4;text-decoration:none;white-space:nowrap;font-size:13px;';
+                    item.onmouseenter = () => item.style.background = '#313244';
+                    item.onmouseleave = () => item.style.background = 'transparent';
+                    item.onclick = (ev) => { ev.preventDefault(); menu.style.display = 'none'; e.onClick(); };
+                    menu.appendChild(item);
+                }
+            },
+            mount() {
+                if (document.getElementById('lss-tools-openbtn')) return;
+                const navUl = document.querySelector('#main_navbar #navbar-main-collapse ul.navbar-nav');
+                const openMenu = (anchorRect) => {
+                    const menu = document.getElementById('lss-tools-dropdown');
+                    if (!menu) return;
+                    const show = menu.style.display === 'none' || !menu.style.display;
+                    menu.style.display = show ? 'block' : 'none';
+                    if (show && anchorRect) { menu.style.top = (anchorRect.bottom + 4) + 'px'; menu.style.right = Math.max(8, window.innerWidth - anchorRect.right) + 'px'; }
+                };
+                // Dropdown-Container (fixed, an den Button angedockt)
+                const dd = document.createElement('div');
+                dd.id = 'lss-tools-dropdown';
+                dd.style.cssText = 'position:fixed;display:none;z-index:100000;background:#1e1e2e;border:1px solid #45475a;border-radius:8px;padding:4px 0;box-shadow:0 6px 24px rgba(0,0,0,.4);min-width:190px;';
+                document.body.appendChild(dd);
+                // Schließen bei Klick außerhalb
+                document.addEventListener('click', (ev) => {
+                    const btn = document.getElementById('lss-tools-openbtn');
+                    if (dd.style.display === 'block' && !dd.contains(ev.target) && btn && !btn.contains(ev.target)) dd.style.display = 'none';
+                });
+                if (navUl) {
+                    const li = document.createElement('li');
+                    li.id = 'lss-tools-openbtn';
+                    li.innerHTML = `<a href="#" title="Analyse-Tools"><span style="font-size:15px;">🛠️</span></a>`;
+                    li.querySelector('a').onclick = (ev) => { ev.preventDefault(); openMenu(li.getBoundingClientRect()); };
+                    navUl.insertBefore(li, navUl.firstChild);
+                } else {
+                    const btn = document.createElement('button');
+                    btn.id = 'lss-tools-openbtn';
+                    btn.textContent = '🛠️ Tools';
+                    btn.style.cssText = 'position:fixed;top:150px;right:20px;z-index:99998;padding:8px 12px;background:#f9e2af;color:#1e1e2e;border:none;border-radius:8px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.3);';
+                    btn.onclick = () => openMenu(btn.getBoundingClientRect());
+                    document.body.appendChild(btn);
+                }
+                this.rebuild();
+            },
+        };
+        window.lssToolsMenu = api;
+        // Menü aufbauen, sobald DOM bereit ist
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => api.mount());
+        else api.mount();
+        return api;
+    }
+
     if (window.top !== window.self) return;
 
     const CONFIG = {
@@ -173,22 +245,8 @@
     }
 
     function addBadge() {
-        if (document.getElementById('np-openbtn')) return;
-        const navUl = document.querySelector('#main_navbar #navbar-main-collapse ul.navbar-nav');
-        if (navUl) {
-            const li = document.createElement('li');
-            li.id = 'np-openbtn';
-            li.innerHTML = `<a href="#" title="Fahrzeuge ohne festes Personal"><span style="font-size:15px;">👤</span></a>`;
-            li.querySelector('a').onclick = (e) => { e.preventDefault(); buildPanel(); };
-            navUl.insertBefore(li, navUl.firstChild);
-        } else {
-            const btn = document.createElement('button');
-            btn.id = 'np-openbtn';
-            btn.textContent = '👤 ohne Personal';
-            btn.style.cssText = 'position:fixed;top:150px;right:20px;z-index:99998;padding:8px 12px;background:#f9e2af;color:#1e1e2e;border:none;border-radius:8px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.3);';
-            btn.onclick = buildPanel;
-            document.body.appendChild(btn);
-        }
+        const menu = ensureToolsMenu();
+        menu.add('np-openbtn', '👤 Fahrzeuge ohne Personal', () => buildPanel(), 20);
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addBadge);
