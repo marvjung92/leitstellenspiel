@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Fahrzeuge ohne festes Personal
 // @namespace    http://tampermonkey.net/
-// @version      1.00
+// @version      1.01
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @description  Listet alle eigenen Fahrzeuge auf, denen KEIN Personal fest zugewiesen ist ("Zugewiesenes Personal: 0" auf der Personalzuweisungs-Seite). Prüft die Fahrzeuge im Hintergrund, mit Drosselung. Panel + Navbar-Badge.
@@ -47,20 +47,18 @@
     }
 
     // Personalzuweisungs-Seite eines Fahrzeugs prüfen: wie viel Personal ist FEST zugewiesen?
-    // Auf /vehicles/<id>/zuweisung steht unten: "Zugewiesenes Personal: <span id=count_personal>N</span>".
-    // Fest zugewiesen = Personen mit einem "Zuweisung entfernen"-Button (Klasse btn-assigned) bzw. der
-    // Zähler count_personal. 0 => Fahrzeug hat kein festes Personal.
+    // Auf /vehicles/<id>/zuweisung hat JEDE fest zugewiesene Person einen Link "Fahrzeugbindung
+    // entfernen" (href .../zuweisungDo/<personal_id>). Anzahl dieser Links = zugewiesenes Personal.
+    // (Der Zähler #count_personal wird erst per JS gefüllt und ist im abgerufenen Roh-HTML leer –
+    //  deshalb wird er NICHT verwendet; Beleg 25.07.: DLK mit 2 Personen wurde sonst als 0 gelesen.)
     async function checkVehicle(v) {
         const res = await fetch(`/vehicles/${v.id}/zuweisung`, { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) return null;
         const html = await res.text();
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        // Primär: der count_personal-Zähler
-        let assigned = null;
-        const cnt = doc.getElementById('count_personal');
-        if (cnt) { const n = parseInt(cnt.textContent.replace(/[^\d]/g, ''), 10); if (Number.isFinite(n)) assigned = n; }
-        // Fallback: Anzahl "Zuweisung entfernen"-Buttons (btn-assigned)
-        if (assigned == null) assigned = doc.querySelectorAll('a.btn-assigned, .btn-assigned').length;
+        // Primär: "Fahrzeugbindung entfernen"-Links zählen (robust gegen Whitespace/Umbrüche)
+        let assigned = (html.match(/Fahrzeugbindung entfernen/gi) || []).length;
+        // Fallback (falls Wortlaut variiert): Personen-Zeilen mit "zuweisung aufheben/entfernen"
+        if (!assigned) assigned = (html.match(/zuweisung\s*(aufheben|entfernen)/gi) || []).length;
         const rec = { assigned, name: v.name, building: v.building, ts: Date.now() };
         results[v.id] = rec;
         return rec;
