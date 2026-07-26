@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Lehrgangs-Bedarf
 // @namespace    http://tampermonkey.net/
-// @version      1.00
+// @version      1.02
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lehrgangsbedarf.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lehrgangsbedarf.user.js
 // @description  Listet Fahrzeuge, deren zugewiesenes Personal die benötigten Lehrgänge (noch) nicht erfüllt. Zeigt "(n/m) Lehrgang" pro Fahrzeug, markiert "im Unterricht" gesondert. Gruppiert nach Lehrgang und Wache.
@@ -114,22 +114,39 @@
             if (force) { results = {}; persist(); }
             $status.innerHTML = 'Lade Fahrzeugliste…';
             const vehicles = await loadVehicles();
+            console.log('[Lehrgangs-Bedarf] /api/vehicles lieferte', vehicles.length, 'Fahrzeuge');
             const checkable = vehicles.filter(v => !cannotHavePersonnel(v));
             const now = Date.now();
             const due = checkable.filter(v => force || !results[v.id] || now - results[v.id].ts > CONFIG.cacheMs);
+            console.log('[Lehrgangs-Bedarf] prüfbar:', checkable.length, '| zu prüfen (due):', due.length, '| bereits im Cache:', checkable.length - due.length);
+            if (!vehicles.length) { $status.innerHTML = '<span style="color:#f38ba8;">Keine Fahrzeuge von /api/vehicles erhalten – bist du eingeloggt? (Konsole prüfen)</span>'; running = false; return; }
+            if (!due.length) {
+                // Alles im Cache -> direkt rendern statt "nichts passiert"
+                $status.innerHTML = 'Alle Fahrzeuge bereits im Cache – zeige Ergebnis (Shift+Klick erzwingt Neuprüfung).';
+                render(panel, vehicles);
+                running = false; return;
+            }
             let done = 0, idx = 0;
+            const total = due.length;
             const t0 = Date.now();
+            const paint = () => {
+                const rate = done / Math.max(0.1, (Date.now() - t0) / 1000);
+                const eta = rate > 0 ? Math.round((total - done) / rate) : 0;
+                const pct = Math.round(done / total * 100);
+                const mm = Math.floor(eta / 60), ss = eta % 60;
+                const etaTxt = eta > 0 ? (mm ? `${mm} min ${ss}s` : `${ss}s`) : '–';
+                $status.innerHTML = `Prüfe Fahrzeuge… <b>${done}/${total}</b> (${pct}%) · noch ~${etaTxt}`
+                    + `<div style="height:6px;background:#313244;border-radius:3px;margin-top:4px;overflow:hidden;">`
+                    + `<div style="height:100%;width:${pct}%;background:#89b4fa;transition:width .2s;"></div></div>`;
+            };
+            paint(); // sofort 0/total anzeigen
             async function worker() {
-                while (idx < due.length) {
+                while (idx < total) {
                     const v = due[idx++];
                     try { await checkVehicle(v); } catch (e) { /* nächster */ }
                     done++;
-                    if (done % 15 === 0 || done === due.length) {
-                        const rate = done / Math.max(1, (Date.now() - t0) / 1000);
-                        const eta = rate > 0 ? Math.round((due.length - done) / rate) : 0;
-                        $status.innerHTML = `Prüfe… <b>${done}/${due.length}</b> · ~${eta}s übrig`;
-                        persist(); render(panel, vehicles);
-                    }
+                    paint(); // JEDES Fahrzeug -> Balken bewegt sich flüssig
+                    if (done % 25 === 0) { persist(); render(panel, vehicles); } // teures Rendern seltener
                     if (CONFIG.fetchDelayMs) await new Promise(r => setTimeout(r, CONFIG.fetchDelayMs));
                 }
             }
