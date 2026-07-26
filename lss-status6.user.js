@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Status 6 (nicht einsatzbereit) + Lehrgangs-Check
 // @namespace    http://tampermonkey.net/
-// @version      1.00
+// @version      1.01
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-status6.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-status6.user.js
 // @description  Listet alle Fahrzeuge im FMS-Status 6 (nicht einsatzbereit) und zeigt pro Fahrzeug den Grund (kein Personal / Personal ohne Lehrgang / anderer) sowie den Lehrgangs-Abgleich des zugewiesenen Personals.
@@ -141,13 +141,14 @@
             lastList = list;
             if (!list.length) { $status.innerHTML = '<b style="color:#a6e3a1;">Kein Fahrzeug im Status 6 🎉</b>'; render(panel); running = false; return; }
             const due = list; // Status 6 ist überschaubar -> immer frisch prüfen
+            $status.innerHTML = `<b>${due.length}</b> Fahrzeug(e) im Status 6 gefunden – starte Prüfung…`;
             let done = 0, idx = 0;
             const total = due.length, t0 = Date.now();
             const paint = () => {
                 const rate = done / Math.max(0.1, (Date.now() - t0) / 1000);
                 const eta = rate > 0 ? Math.round((total - done) / rate) : 0;
                 const pct = Math.round(done / total * 100);
-                $status.innerHTML = `Prüfe… <b>${done}/${total}</b> (${pct}%) · noch ~${eta}s`
+                $status.innerHTML = `Geprüft: <b>${done}</b> von <b>${total}</b> Fahrzeugen (${pct}%) · noch ~${eta}s`
                     + `<div style="height:6px;background:#313244;border-radius:3px;margin-top:4px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:#89b4fa;"></div></div>`;
             };
             paint();
