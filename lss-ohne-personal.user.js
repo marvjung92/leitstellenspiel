@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Fahrzeuge ohne festes Personal
 // @namespace    http://tampermonkey.net/
-// @version      1.04
+// @version      1.05
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @description  Listet alle eigenen Fahrzeuge auf, denen KEIN Personal fest zugewiesen ist ("Zugewiesenes Personal: 0" auf der Personalzuweisungs-Seite). Prüft die Fahrzeuge im Hintergrund, mit Drosselung. Panel + Navbar-Badge.
@@ -59,6 +59,10 @@
             building: v.building_name || v.building || '',
             typeId: Number(v.vehicle_type),
             typeName: v.vehicle_type_caption || '',
+            // Festes Personal steht DIREKT in der API: assigned_personnel_count.
+            // null/0 = kein festes Personal. max_personnel_override=0 kann ein personalloser Typ sein.
+            assignedRaw: v.assigned_personnel_count,
+            maxOverride: v.max_personnel_override,
         }));
     }
 
@@ -88,41 +92,20 @@
     }
 
     let running = false;
-    async function scan(panel, force) {
+    async function scan(panel) {
+        // Keine Seitenabrufe mehr nötig: assigned_personnel_count kommt direkt aus /api/vehicles.
         if (running) return;
         running = true;
         const $status = panel.querySelector('#np-status');
         try {
-            if (force) { results = {}; persist(); } // alte Ergebnisse verwerfen, alles frisch prüfen
-            $status.innerHTML = force ? 'Prüfe ALLE Fahrzeuge neu…' : 'Lade Fahrzeugliste…';
+            $status.innerHTML = 'Lade Fahrzeugliste…';
             const vehicles = await loadVehicles();
-            const now = Date.now();
-            // Anhänger/AB/Aggregate NICHT per Seite prüfen – konstruktiv ohne Personal, aus Liste raus.
-            const checkable = vehicles.filter(v => !cannotHavePersonnel(v));
-            const excluded = vehicles.length - checkable.length;
-            const due = checkable.filter(v => force || !results[v.id] || now - results[v.id].ts > CONFIG.cacheMs)
-                                 .slice(0, CONFIG.maxChecksPerRun);
-            let done = 0;
-            const t0 = Date.now();
-            // Parallele Worker-Pool: mehrere Abrufe gleichzeitig.
-            let idx = 0;
-            async function worker() {
-                while (idx < due.length) {
-                    const v = due[idx++];
-                    try { await checkVehicle(v); } catch (e) { /* nächster */ }
-                    done++;
-                    if (done % 15 === 0 || done === due.length) {
-                        const rate = done / Math.max(1, (Date.now() - t0) / 1000);
-                        const eta = rate > 0 ? Math.round((due.length - done) / rate) : 0;
-                        $status.innerHTML = `Prüfe… <b>${done}/${due.length}</b> · ~${eta}s übrig`;
-                        persist(); render(panel, vehicles);
-                    }
-                    if (CONFIG.fetchDelayMs) await new Promise(r => setTimeout(r, CONFIG.fetchDelayMs));
-                }
+            for (const v of vehicles) {
+                const n = (v.assignedRaw == null) ? 0 : Number(v.assignedRaw) || 0;
+                results[v.id] = { assigned: n, name: v.name, building: v.building, ts: Date.now() };
             }
-            await Promise.all(Array.from({ length: Math.max(1, CONFIG.concurrency) }, worker));
             persist();
-            render(panel, vehicles, excluded);
+            render(panel, vehicles);
         } catch (e) {
             $status.innerHTML = `<span style="color:#f38ba8;">Fehler: ${e.message}</span>`;
         } finally { running = false; }
@@ -136,7 +119,7 @@
         const without = checked.filter(v => (results[v.id].assigned || 0) === 0);
         const exTxt = (excluded != null ? excluded : (vehicles.length - checkable.length));
         $status.innerHTML = `<b style="color:#f9e2af;">${without.length}</b> Fahrzeug(e) ohne festes Personal `
-            + `<span style="color:#9399b2;">(${checked.length}/${checkable.length} geprüft, ${exTxt} Anhänger/AB übersprungen)</span>`;
+            + `<span style="color:#9399b2;">(von ${checkable.length} personalfähigen · ${exTxt} Anhänger/AB ausgeblendet)</span>`;
         if (!without.length) {
             $list.innerHTML = checked.length
                 ? '<div style="color:#a6e3a1;padding:8px;">Alle geprüften Fahrzeuge haben festes Personal. 🎉</div>'
@@ -174,8 +157,7 @@
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <b style="font-size:14px;">👤 Fahrzeuge ohne festes Personal</b>
                 <div>
-                    <button id="np-scan" title="Nur neue/veraltete Fahrzeuge prüfen (nutzt Cache)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">⟳ Prüfen</button>
-                    <button id="np-rescan" title="Alles neu prüfen (Cache löschen)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#f9e2af;cursor:pointer;font-size:13px;padding:2px 7px;">⟳⟳ Alle neu</button>
+                    <button id="np-scan" title="Jetzt prüfen (liest Personal direkt aus /api/vehicles)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">⟳ Prüfen</button>
                     <button id="np-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
                 </div>
             </div>
@@ -185,8 +167,7 @@
         `;
         document.body.appendChild(panel);
         panel.querySelector('#np-close').onclick = () => panel.remove();
-        panel.querySelector('#np-scan').onclick = (e) => scan(panel, e.shiftKey);
-        panel.querySelector('#np-rescan').onclick = () => scan(panel, true);
+        panel.querySelector('#np-scan').onclick = () => scan(panel);
         // Sofort das zeigen, was schon im Cache ist
         loadVehicles().then(vs => render(panel, vs)).catch(() => {});
     }
