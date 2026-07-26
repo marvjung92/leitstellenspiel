@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Fahrzeuge ohne festes Personal
 // @namespace    http://tampermonkey.net/
-// @version      1.03
+// @version      1.04
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-ohne-personal.user.js
 // @description  Listet alle eigenen Fahrzeuge auf, denen KEIN Personal fest zugewiesen ist ("Zugewiesenes Personal: 0" auf der Personalzuweisungs-Seite). Prüft die Fahrzeuge im Hintergrund, mit Drosselung. Panel + Navbar-Badge.
@@ -26,7 +26,8 @@
             // <<< HIER Typ-IDs eintragen, z.B. AB-Sonderlöschmittel, Anh Sonderlöschmittel, NEA50 >>>
         ],
         // Zusätzlich Namensmuster als Netz (case-egal), falls eine Typ-ID mal fehlt:
-        noPersonnelNamePatterns: ['anh ', 'anhänger', 'ab-', 'ab ', 'nea', 'dekon-p', 'gw-anh', 'sata', 'fwa'],
+        noPersonnelNamePatterns: ['anh ', 'anhänger', 'ab-', 'ab ', 'nea', 'dekon-p', 'gw-anh', 'sata', 'fwa',
+            'außenlastbehälter', 'aussenlastbehälter', 'fkh', 'brmg', 'mzb'],
     };
 
     // Cache: vehicleId -> { assigned: <zahl>, name, building, ts }
