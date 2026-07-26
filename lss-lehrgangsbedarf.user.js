@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Lehrgangs-Bedarf
 // @namespace    http://tampermonkey.net/
-// @version      1.02
+// @version      1.03
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lehrgangsbedarf.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lehrgangsbedarf.user.js
 // @description  Listet Fahrzeuge, deren zugewiesenes Personal die benötigten Lehrgänge (noch) nicht erfüllt. Zeigt "(n/m) Lehrgang" pro Fahrzeug, markiert "im Unterricht" gesondert. Gruppiert nach Lehrgang und Wache.
@@ -105,6 +105,8 @@
         return rec;
     }
 
+    let filterMode = 'all'; // 'all' = alle offenen | 'nostudy' = nur die OHNE jemanden im Unterricht
+
     let running = false;
     async function scan(panel, force) {
         if (running) return;
@@ -164,9 +166,13 @@
         const checkable = vehicles.filter(v => !cannotHavePersonnel(v));
         const checked = checkable.filter(v => results[v.id] && results[v.id].hasBlock);
         // Problemfälle: Anforderung nicht erfüllt
-        const unmet = checked.filter(v => results[v.id].anyUnmet);
+        const unmetAll = checked.filter(v => results[v.id].anyUnmet);
+        // "niemand im Unterricht" = kein Personal in Ausbildung für dieses Fahrzeug
+        const noStudy = unmetAll.filter(v => (results[v.id].inTraining || []).length === 0);
+        const unmet = filterMode === 'nostudy' ? noStudy : unmetAll;
         $status.innerHTML = `<b style="color:#f38ba8;">${unmet.length}</b> Fahrzeug(e) mit offenem Lehrgangsbedarf `
-            + `<span style="color:#9399b2;">(von ${checked.length} mit Lehrgangsanforderung geprüft)</span>`;
+            + `<span style="color:#9399b2;">(${filterMode === 'nostudy' ? 'ohne jemanden im Unterricht · ' : ''}von ${checked.length} geprüft`
+            + `${filterMode === 'all' && noStudy.length ? ` · ${noStudy.length} davon ohne Unterricht` : ''})</span>`;
         if (!unmet.length) {
             $list.innerHTML = checked.length
                 ? '<div style="color:#a6e3a1;padding:8px;">Alle geprüften Fahrzeuge haben ausreichend ausgebildetes Personal. 🎉</div>'
@@ -191,10 +197,7 @@
                 const parts = r.need.map(n => `<span style="color:${n.ok ? '#a6e3a1' : '#f38ba8'};">(${n.have}/${n.req}) ${n.label}</span>`).join(', ');
                 const train = r.inTraining.length ? ` <span style="color:#f9e2af;">· 🎓 ${r.inTraining.length} im Unterricht</span>` : '';
                 html += `<div style="display:flex;flex-direction:column;padding:4px 6px 4px 16px;border-bottom:1px solid #313244;">
-                    <div style="display:flex;gap:8px;">
-                        <a href="/vehicles/${v.id}/zuweisung" style="flex:1;color:#cdd6f4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.name}</a>
-                        <span style="color:#9399b2;font-size:11px;white-space:nowrap;">${r.building || ''}</span>
-                    </div>
+                    <a href="/vehicles/${v.id}/zuweisung" style="color:#cdd6f4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.name}${r.building ? ` <span style="color:#9399b2;">(${r.building})</span>` : ''}</a>
                     <div style="font-size:11px;">${parts}${train}</div>
                 </div>`;
             }
@@ -212,6 +215,7 @@
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <b style="font-size:14px;">🎓 Lehrgangs-Bedarf</b>
                 <div>
+                    <button id="lb-filter" title="Filter: alle offenen  /  nur Fahrzeuge ohne jemanden im Unterricht" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">Filter: Alle</button>
                     <button id="lb-scan" title="Prüfen (Shift+Klick = alles neu, Cache löschen)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">⟳ Prüfen</button>
                     <button id="lb-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
                 </div>
@@ -223,6 +227,18 @@
         document.body.appendChild(panel);
         panel.querySelector('#lb-close').onclick = () => panel.remove();
         panel.querySelector('#lb-scan').onclick = (e) => scan(panel, e.shiftKey);
+        const fbtn = panel.querySelector('#lb-filter');
+        const paintFilterBtn = () => {
+            fbtn.textContent = filterMode === 'nostudy' ? 'Filter: ohne Unterricht' : 'Filter: Alle';
+            fbtn.style.background = filterMode === 'nostudy' ? '#f9e2af' : 'none';
+            fbtn.style.color = filterMode === 'nostudy' ? '#1e1e2e' : '#cdd6f4';
+        };
+        fbtn.onclick = () => {
+            filterMode = filterMode === 'nostudy' ? 'all' : 'nostudy';
+            paintFilterBtn();
+            loadVehicles().then(vs => render(panel, vs)).catch(() => {});
+        };
+        paintFilterBtn();
         loadVehicles().then(vs => render(panel, vs)).catch(() => {});
     }
 
