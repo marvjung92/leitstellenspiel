@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Lehrgangs-Bedarf
 // @namespace    http://tampermonkey.net/
-// @version      1.04
+// @version      1.05
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lehrgangsbedarf.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lehrgangsbedarf.user.js
 // @description  Listet Fahrzeuge, deren zugewiesenes Personal die benötigten Lehrgänge (noch) nicht erfüllt. Zeigt "(n/m) Lehrgang" pro Fahrzeug, markiert "im Unterricht" gesondert. Gruppiert nach Lehrgang und Wache.
@@ -112,11 +112,17 @@
     }
 
     function parseInTraining(html) {
-        // "Im Unterricht: <a ...>Notarzt-Ausbildung</a>" -> Lehrgangsnamen sammeln
+        // Zählt laufende Ausbildungen. Der Span trägt data-education-key (z.B. "notarzt") direkt vor
+        // "Im Unterricht: <a>Notarzt-Ausbildung</a>". Wir nehmen key UND Namen mit.
         const out = [];
-        const re = /Im Unterricht:\s*<a[^>]*>([^<]+)<\/a>/gi;
+        const re = /data-education-key="([^"]*)"[^>]*>\s*Im Unterricht:\s*<a[^>]*>([^<]+)<\/a>/gi;
         let m;
-        while ((m = re.exec(html)) !== null) out.push(m[1].trim());
+        while ((m = re.exec(html)) !== null) out.push({ key: m[1], label: m[2].trim() });
+        // Fallback ohne key (falls Markup mal abweicht)
+        if (!out.length) {
+            const r2 = /Im Unterricht:\s*<a[^>]*>([^<]+)<\/a>/gi; let mm;
+            while ((mm = r2.exec(html)) !== null) out.push({ key: '', label: mm[1].trim() });
+        }
         return out;
     }
 
@@ -137,6 +143,7 @@
     }
 
     let filterMode = 'all'; // 'all' = alle offenen | 'nostudy' = nur die OHNE jemanden im Unterricht
+    let viewMode = 'list';  // 'list' = Fahrzeuge | 'summary' = Lehrgangs-Gesamtübersicht
 
     let running = false;
     async function scan(panel, force) {
@@ -191,7 +198,75 @@
         } finally { running = false; }
     }
 
+    // Aggregiert den Bedarf über alle Fahrzeuge: pro Lehrgang Summe der fehlenden Plätze (req-have),
+    // Zahl der betroffenen Fahrzeuge und wie viele Personen dafür schon im Unterricht sind.
+    function aggregate(vehicles) {
+        const checkable = vehicles.filter(v => !cannotHavePersonnel(v));
+        const byCourse = new Map(); // label -> { missing, vehicles, inTraining, key }
+        let studyTotalByKey = new Map(), studyTotalByLabel = new Map();
+        // Erst alle laufenden Ausbildungen über den ganzen Fuhrpark zählen (nach key und Label)
+        for (const v of checkable) {
+            const r = results[v.id]; if (!r) continue;
+            for (const it of (r.inTraining || [])) {
+                if (it.key) studyTotalByKey.set(it.key, (studyTotalByKey.get(it.key) || 0) + 1);
+                if (it.label) studyTotalByLabel.set(it.label, (studyTotalByLabel.get(it.label) || 0) + 1);
+            }
+        }
+        for (const v of checkable) {
+            const r = results[v.id]; if (!r || !r.hasBlock) continue;
+            for (const n of r.need) {
+                if (n.ok) continue; // erfüllt -> kein Bedarf
+                const miss = Math.max(0, n.req - n.have);
+                if (!byCourse.has(n.label)) byCourse.set(n.label, { label: n.label, missing: 0, vehicles: 0, key: n.key || '' });
+                const e = byCourse.get(n.label);
+                e.missing += miss;
+                e.vehicles += 1;
+            }
+        }
+        // "in Ausbildung" je Lehrgang zuordnen (bevorzugt über den Namen-Anfang, sonst key)
+        const rows = [...byCourse.values()].map(e => {
+            // Label des Bedarfs (z.B. "Notarzt") vs. Ausbildungsname (z.B. "Notarzt-Ausbildung")
+            let study = 0;
+            for (const [lbl, cnt] of studyTotalByLabel) if (lbl.toLowerCase().startsWith(e.label.toLowerCase())) study += cnt;
+            const net = Math.max(0, e.missing - study);
+            return { ...e, study, net };
+        });
+        rows.sort((a, b) => b.net - a.net || b.missing - a.missing);
+        return rows;
+    }
+
+    function renderSummary(panel, vehicles) {
+        const $status = panel.querySelector('#lb-status');
+        const $list = panel.querySelector('#lb-list');
+        const rows = aggregate(vehicles);
+        const totalMissing = rows.reduce((s, r) => s + r.missing, 0);
+        const totalNet = rows.reduce((s, r) => s + r.net, 0);
+        $status.innerHTML = `<b style="color:#f9e2af;">${rows.length}</b> Lehrgangs-Typen mit Bedarf · `
+            + `<b>${totalMissing}</b> Plätze offen · <b style="color:#a6e3a1;">${totalNet}</b> nach Abzug laufender Ausbildungen`;
+        if (!rows.length) { $list.innerHTML = '<div style="color:#a6e3a1;padding:8px;">Kein offener Lehrgangsbedarf. 🎉</div>'; return; }
+        let html = '<div style="margin-top:4px;">';
+        for (const r of rows) {
+            const barMax = rows[0].missing || 1;
+            const pct = Math.round(r.missing / barMax * 100);
+            html += `<div style="padding:6px 4px;border-bottom:1px solid #313244;">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;">
+                    <b>${r.label}</b>
+                    <span style="font-size:12px;"><b style="color:#f38ba8;">${r.net}</b> <span style="color:#9399b2;">noch nötig</span></span>
+                </div>
+                <div style="font-size:11px;color:#9399b2;margin:2px 0;">
+                    ${r.missing} Plätze offen in ${r.vehicles} Fahrzeug(en)${r.study ? ` · 🎓 ${r.study} in Ausbildung` : ''}
+                </div>
+                <div style="height:6px;background:#313244;border-radius:3px;overflow:hidden;">
+                    <div style="height:100%;width:${pct}%;background:${r.net > 0 ? '#f38ba8' : '#a6e3a1'};"></div>
+                </div>
+            </div>`;
+        }
+        html += '</div>';
+        $list.innerHTML = html;
+    }
+
     function render(panel, vehicles) {
+        if (viewMode === 'summary') { renderSummary(panel, vehicles); return; }
         const $status = panel.querySelector('#lb-status');
         const $list = panel.querySelector('#lb-list');
         const checkable = vehicles.filter(v => !cannotHavePersonnel(v));
@@ -246,6 +321,7 @@
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <b style="font-size:14px;">🎓 Lehrgangs-Bedarf</b>
                 <div>
+                    <button id="lb-view" title="Ansicht: Fahrzeug-Liste  /  Lehrgangs-Gesamtübersicht" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">📊 Übersicht</button>
                     <button id="lb-filter" title="Filter: alle offenen  /  nur Fahrzeuge ohne jemanden im Unterricht" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">Filter: Alle</button>
                     <button id="lb-scan" title="Prüfen (Shift+Klick = alles neu, Cache löschen)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">⟳ Prüfen</button>
                     <button id="lb-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
@@ -258,7 +334,19 @@
         document.body.appendChild(panel);
         panel.querySelector('#lb-close').onclick = () => panel.remove();
         panel.querySelector('#lb-scan').onclick = (e) => scan(panel, e.shiftKey);
+        const vbtn = panel.querySelector('#lb-view');
         const fbtn = panel.querySelector('#lb-filter');
+        const paintViewBtn = () => {
+            vbtn.textContent = viewMode === 'summary' ? '📋 Fahrzeuge' : '📊 Übersicht';
+            vbtn.style.background = viewMode === 'summary' ? '#89b4fa' : 'none';
+            vbtn.style.color = viewMode === 'summary' ? '#1e1e2e' : '#cdd6f4';
+            fbtn.style.display = viewMode === 'summary' ? 'none' : ''; // Filter nur in Fahrzeug-Liste
+        };
+        vbtn.onclick = () => {
+            viewMode = viewMode === 'summary' ? 'list' : 'summary';
+            paintViewBtn();
+            loadVehicles().then(vs => render(panel, vs)).catch(() => {});
+        };
         const paintFilterBtn = () => {
             fbtn.textContent = filterMode === 'nostudy' ? 'Filter: ohne Unterricht' : 'Filter: Alle';
             fbtn.style.background = filterMode === 'nostudy' ? '#f9e2af' : 'none';
@@ -270,6 +358,7 @@
             loadVehicles().then(vs => render(panel, vs)).catch(() => {});
         };
         paintFilterBtn();
+        paintViewBtn();
         loadVehicles().then(vs => render(panel, vs)).catch(() => {});
     }
 
