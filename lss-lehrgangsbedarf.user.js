@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Lehrgangs-Bedarf
 // @namespace    http://tampermonkey.net/
-// @version      1.03
+// @version      1.04
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lehrgangsbedarf.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lehrgangsbedarf.user.js
 // @description  Listet Fahrzeuge, deren zugewiesenes Personal die benötigten Lehrgänge (noch) nicht erfüllt. Zeigt "(n/m) Lehrgang" pro Fahrzeug, markiert "im Unterricht" gesondert. Gruppiert nach Lehrgang und Wache.
@@ -40,14 +40,45 @@
         }
     }
 
+    // Gebäude-Namen (building_id -> caption). /api/vehicles liefert nur building_id, nicht den Namen.
+    let buildingNames = {};
+    const BLD_KEY = 'lehrbedarf_buildings';
+    (function loadBldCache() {
+        try { const c = JSON.parse(localStorage.getItem(BLD_KEY) || 'null'); if (c && Date.now() - c.ts < 24 * 3600000) buildingNames = c.map || {}; } catch (e) {}
+    })();
+    async function loadBuildingNames() {
+        if (Object.keys(buildingNames).length) return; // Cache reicht
+        try {
+            const res = await fetch('/api/buildings', { credentials: 'same-origin', cache: 'no-store' });
+            if (!res.ok) return;
+            const first = await res.json();
+            const map = {};
+            const scan = (arr) => { for (const b of arr) map[String(b.id)] = b.caption || ('#' + b.id); };
+            if (Array.isArray(first)) {
+                scan(first);
+                const pageSize = first.length;
+                if (pageSize >= 100) {
+                    for (let off = pageSize; off < 50000; off += pageSize) {
+                        const r = await fetch(`/api/buildings?limit=${pageSize}&offset=${off}`, { credentials: 'same-origin', cache: 'no-store' });
+                        if (!r.ok) break; const pg = await r.json();
+                        if (!Array.isArray(pg) || !pg.length) break; scan(pg); if (pg.length < pageSize) break;
+                    }
+                }
+            } else if (first && Array.isArray(first.buildings)) scan(first.buildings);
+            buildingNames = map;
+            try { localStorage.setItem(BLD_KEY, JSON.stringify({ ts: Date.now(), map })); } catch (e) {}
+        } catch (e) { console.warn('[Lehrgangs-Bedarf] /api/buildings nicht ladbar:', e); }
+    }
+
     async function loadVehicles() {
+        await loadBuildingNames(); // Wachennamen bereitstellen
         const res = await fetch('/api/vehicles', { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) throw new Error(`/api/vehicles HTTP ${res.status}`);
         const all = await res.json();
         return all.map(v => ({
             id: String(v.id),
             name: v.caption || `#${v.id}`,
-            building: v.building_name || v.building || '',
+            building: buildingNames[String(v.building_id)] || '',
             typeId: Number(v.vehicle_type),
             typeName: v.vehicle_type_caption || '',
         }));
