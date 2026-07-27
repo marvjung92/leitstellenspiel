@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.53
+// @version      5.54
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – jetzt mit Debug-Logging und Log-Export.
@@ -44,6 +44,9 @@
         trailerRetryCooldownMs: 5 * 60000, // Nach Server-Ablehnung ("Trägerfahrzeug nicht verfügbar") diesen Anhänger-Typ pro Einsatz erst nach Ablauf erneut versuchen – verhindert Alarm-Schleifen im Minutentakt
         // Krankenhauswahl:
         preferSpecialty: true,     // Fachabteilung bevorzugen (sonst Credit-Abzug)
+        maxHospitalKm: 50,         // Deckel: RTW fährt max. so weit ins Krankenhaus. Nur wenn KEIN Haus
+                                   //   mit freier (Fach-)Abteilung innerhalb dieser Grenze frei ist, wird
+                                   //   weiter gefahren. Verhindert 300-km-Fernfahrten, die RTW lange binden.
         maxAllianceTax: 20,
         maxOnePerMission: ['LNA', 'OrgL'],     // diese Anforderungen pro Einsatz nur 1x bedienen
         ktVehicles: ['KTW', 'RTW'],            // Krankentransporte: diese Typen der Reihe nach versuchen
@@ -939,7 +942,7 @@
     `;
     panel.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:6px;">
-            <b style="white-space:nowrap;">🚨 Auto-Dispatch v5.53</b>
+            <b style="white-space:nowrap;">🚨 Auto-Dispatch v5.54</b>
             <span style="display:flex;gap:4px;">
                 <button id="ad-toggle" style="cursor:pointer;border:none;border-radius:4px;padding:2px 10px;background:#a6e3a1;color:#1e1e2e;font-weight:bold;">Start</button>
                 <button id="ad-minimize" title="Panel minimieren/maximieren" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:2px 8px;background:#313244;color:#cdd6f4;font-weight:bold;">–</button>
@@ -1453,15 +1456,29 @@
         dbg(`[Fzg ${v.vehicleId}] KH-Auswahl: ${own.length} eigene, ${alliance.length} Verband; Fachabteilung nötig: ${needsSpecialty}`);
 
         // Auswahl: Tabellen sind bereits nach Entfernung sortiert.
-        const candidates = [
+        // Entfernungs-Deckel: bevorzugt Krankenhäuser innerhalb maxHospitalKm, damit RTW nicht für
+        // 300+ km gebunden werden (Nebeneffekt des Sprechwunsch-Vorrangs bei vollen lokalen Kliniken).
+        // Nur wenn KEIN Haus innerhalb des Deckels frei ist, wird die Grenze fallengelassen.
+        const cap = CONFIG.maxHospitalKm || 0;
+        const within = (h) => !cap || (Number(h.distance) || 0) <= cap;
+        const buildCandidates = (distFilter) => [
             ...(CONFIG.preferSpecialty && needsSpecialty
-                ? [ own.filter(h => h.freeBeds > 0 && h.specialty),
-                    alliance.filter(h => h.freeBeds > 0 && h.specialty && h.tax <= CONFIG.maxAllianceTax) ]
+                ? [ own.filter(h => h.freeBeds > 0 && h.specialty && distFilter(h)),
+                    alliance.filter(h => h.freeBeds > 0 && h.specialty && h.tax <= CONFIG.maxAllianceTax && distFilter(h)) ]
                 : []),
-            own.filter(h => h.freeBeds > 0),
-            alliance.filter(h => h.freeBeds > 0 && h.tax <= CONFIG.maxAllianceTax),
+            own.filter(h => h.freeBeds > 0 && distFilter(h)),
+            alliance.filter(h => h.freeBeds > 0 && h.tax <= CONFIG.maxAllianceTax && distFilter(h)),
         ];
-        const hospital = candidates.find(list => list.length)?.[0];
+        // 1. Versuch: nur innerhalb des Deckels. 2. Versuch (Fallback): ohne Entfernungsgrenze.
+        let hospital = buildCandidates(within).find(list => list.length)?.[0];
+        let cappedFallback = false;
+        if (!hospital && cap) {
+            hospital = buildCandidates(() => true).find(list => list.length)?.[0];
+            if (hospital) {
+                cappedFallback = true;
+                dbg(`[Fzg ${v.vehicleId}] kein Krankenhaus ≤ ${cap} km frei – weiche auf ${hospital.name} (${hospital.distance} km) aus`);
+            }
+        }
         if (!hospital) return { ok: false, reason: 'kein Krankenhaus mit freien Betten gefunden' };
 
         const go = await fetch(hospital.href, { credentials: 'same-origin' });
@@ -1471,6 +1488,7 @@
         const flags = [
             needsSpecialty ? (hospital.specialty ? 'Fachabt. ✓' : 'ohne Fachabt.!') : null,
             hospital.isAlliance ? `Verband ${hospital.tax}%` : null,
+            cappedFallback ? `⚠️ >${CONFIG.maxHospitalKm} km – kein näheres frei` : null,
         ].filter(Boolean).join(', ');
         return { ok: true, info: `${hospital.name} (${hospital.distance} km${flags ? ', ' + flags : ''})` };
     }
@@ -2927,5 +2945,5 @@
         timer = setTimeout(scanLoop, jitter(CONFIG.scanInterval));
     }
 
-    log('v5.53 geladen – Start drücken.');
+    log('v5.54 geladen – Start drücken.');
 })();
