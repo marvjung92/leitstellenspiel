@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS LF-Einsatzbindung
 // @namespace    http://tampermonkey.net/
-// @version      1.03
+// @version      1.04
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lf-einsatzbindung.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lf-einsatzbindung.user.js
 // @description  Zeigt alle LFs, die aktuell in einem Einsatz gebunden sind – inkl. WELCHER Einsatz (klickbar). Datenquelle: /api/vehicles (FMS + Einsatzziel je Fahrzeug). Verbandseinsätze werden markiert.
@@ -208,9 +208,15 @@
         document.body.appendChild(btn);
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', addButton);
-    } else {
+    // Auf der Seite "Mögliche Einsätze" (/einsaetze) NICHT anzeigen – dort stört das Panel nur.
+    const HIDE_ON = ['/einsaetze'];
+    function startIfAllowed() {
+        if (HIDE_ON.includes(location.pathname.replace(/\/$/, ''))) return;
         addButton();
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startIfAllowed);
+    } else {
+        startIfAllowed();
     }
 })();

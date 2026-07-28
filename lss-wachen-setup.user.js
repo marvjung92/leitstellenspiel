@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Wachen-Setup (Automatisch + Personalziel 300)
 // @namespace    http://tampermonkey.net/
-// @version      1.03
+// @version      1.04
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-wachen-setup.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-wachen-setup.user.js
 // @description  Findet über /api/buildings alle Wachen mit Personalziel 0, klickt bei ihnen "Automatisch" (hire_do/automatic) und setzt das Personalziel auf 300. Mit Drosselung, CSRF-Token und Fortschritts-Panel.
@@ -242,6 +242,12 @@
         }
     }
 
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addButton);
-    else addButton();
+    // Auf der Seite "Mögliche Einsätze" (/einsaetze) NICHT anzeigen – dort stört der Button nur.
+    const HIDE_ON = ['/einsaetze'];
+    function startIfAllowed() {
+        if (HIDE_ON.includes(location.pathname.replace(/\/$/, ''))) return;
+        addButton();
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startIfAllowed);
+    else startIfAllowed();
 })();
