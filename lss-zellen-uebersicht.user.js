@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Zellen-Übersicht (Polizeiwachen)
 // @namespace    http://tampermonkey.net/
-// @version      1.06
+// @version      1.07
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @description  Zeigt pro Polizeiwache die Zellen: fertig, im Bau und frei (bis Maximum). Aus /api/buildings, ein schneller Abruf. Modular für weitere Gebäudetypen erweiterbar.
@@ -20,6 +20,7 @@
     const BUILDING_TYPES = {
         police: { id: 6, label: '🚔 Polizei', icon: '🚔' },
         fire:   { id: 0, label: '🚒 Feuerwehr', icon: '🚒' },
+        thw:    { id: 9, label: '🔧 THW', icon: '🔧' },
     };
     let activeType = 'police';
 
@@ -179,7 +180,7 @@
             const tr = a.closest('tr');
             if (tr) {
                 const cellTxt = tr.textContent.replace(/\s+/g, ' ').trim();
-                const known = cellTxt.match(/(Zelle|Diensthundestaffel|Diensthundstaffel|Motorradstaffel|Großwache|Großgewahrsam|Reiterstaffel|SEK|Wasserschutzpolizei|Rettungswache|Löschzug|Stellplatz[^,]*|Schlauchwagen|AB-[A-Za-zÄÖÜ/]+|Anh [A-Za-zÄÖÜ]+)/);
+                const known = cellTxt.match(/(Zelle|Diensthundestaffel|Diensthundstaffel|Motorradstaffel|Großwache|Großgewahrsam|Reiterstaffel|SEK|Wasserschutzpolizei|Rettungswache|Löschzug|Stellplatz[^,]*|Schlauchwagen|AB-[A-Za-zÄÖÜ/]+|Anh [A-Za-zÄÖÜ]+|Fachgruppe[^,]*|Zugtrupp|Notversorgung|Brückenbau|Räumen|Ortung|Wassergefahren|Bergung|Führung[^,]*|Logistik[^,]*)/);
                 if (known) name = known[1].trim();
                 // sonst: erste Tabellenzelle (oft der Erweiterungsname)
                 if (!name) { const td = tr.querySelector('td'); if (td) name = td.textContent.replace(/\s+/g, ' ').trim().slice(0, 40); }
@@ -311,6 +312,7 @@
             <div style="display:flex;gap:6px;margin-bottom:8px;">
                 <button class="zl-type" data-t="police" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#89b4fa;color:#1e1e2e;">🚔 Polizei</button>
                 <button class="zl-type" data-t="fire" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🚒 Feuerwehr</button>
+                <button class="zl-type" data-t="thw" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🔧 THW</button>
             </div>
             <div id="zl-status" style="margin-bottom:6px;font-size:12px;">Bereit – „⟳ Prüfen" liest die Wachen.</div>
             <div id="zl-list" style="overflow:auto;flex:1;"></div>
