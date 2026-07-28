@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Zellen-Übersicht (Polizeiwachen)
 // @namespace    http://tampermonkey.net/
-// @version      1.02
+// @version      1.04
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @description  Zeigt pro Polizeiwache die Zellen: fertig, im Bau und frei (bis Maximum). Aus /api/buildings, ein schneller Abruf. Modular für weitere Gebäudetypen erweiterbar.
@@ -147,6 +147,65 @@
     // Rohdaten der Gebäude behalten, damit wir extensions/type_id fürs Bauen zur Hand haben.
     let rawById = {};
 
+
+    // Erweiterungen einer Polizeiwache von ihrer Detailseite lesen (/buildings/<id>).
+    // Nur der credits-Kauf wird angeboten (coins gesperrt). Liefert je Erweiterung Name, type_id,
+    // Preis (Credits) und ob sie bereits gebaut/ausgebaut ist.
+    async function loadExtensions(buildingId) {
+        const res = await fetch(`/buildings/${buildingId}`, { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) throw new Error(`/buildings/${buildingId} HTTP ${res.status}`);
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const exts = [];
+        const seen = new Set();
+        // Der Preis steht DIREKT im Link-Text: <a href=".../extension/credits/N">75.000 Credits</a>.
+        // Das ist der zuverlässige Anker. Coins-Links (.../coins/N) werden bewusst ignoriert.
+        for (const a of doc.querySelectorAll('a[href*="/extension/credits/"]')) {
+            const m = (a.getAttribute('href') || '').match(/\/extension\/credits\/(\d+)/);
+            if (!m) continue;
+            const typeId = parseInt(m[1], 10);
+            if (seen.has(typeId)) continue;
+            seen.add(typeId);
+            const linkTxt = (a.textContent || '').replace(/\s+/g, ' ').trim(); // z.B. "75.000 Credits"
+            const priceNum = /credits/i.test(linkTxt) ? parseInt(linkTxt.replace(/[^\d]/g, ''), 10) : null;
+            const priceTxt = priceNum ? priceNum.toLocaleString('de-DE') + ' Credits' : (linkTxt || 'bauen');
+            // Namen aus dem Zeilen-/Zellenkontext holen: nächstgelegene Tabellenzeile oder Überschrift.
+            let name = '';
+            const tr = a.closest('tr');
+            if (tr) {
+                const cellTxt = tr.textContent.replace(/\s+/g, ' ').trim();
+                const known = cellTxt.match(/(Zelle|Diensthundestaffel|Diensthundstaffel|Motorradstaffel|Großwache|Großgewahrsam|Reiterstaffel|SEK|Wasserschutzpolizei)/);
+                if (known) name = known[1];
+            }
+            if (!name) {
+                // Fallback: bekannter Name irgendwo im 400-Zeichen-Fenster vor dem Link
+                const idx = html.indexOf(a.getAttribute('href'));
+                const before = idx > 0 ? html.slice(Math.max(0, idx - 500), idx).replace(/<[^>]+>/g, ' ') : '';
+                const known = before.match(/(Zelle|Diensthundestaffel|Diensthundstaffel|Motorradstaffel|Großwache|Großgewahrsam|Reiterstaffel|SEK|Wasserschutzpolizei)(?![\s\S]*\1)/);
+                name = known ? known[1] : `Erweiterung ${typeId}`;
+            }
+            const builtM = (a.closest('tr')?.textContent || '').match(/Gebaut\s*(\d+)\s*\/\s*(\d+)/i);
+            const builtInfo = builtM ? `${builtM[1]}/${builtM[2]}` : '';
+            exts.push({ typeId, name, priceTxt, priceNum, builtInfo });
+        }
+        return exts;
+    }
+
+    // Eine Erweiterung mit CREDITS bauen (coins gesperrt). Beleg (HAR):
+    // POST /buildings/<id>/extension/credits/<typeId>?redirect_building_id=<id>, Body _method=post + Token.
+    async function buildExtension(buildingId, typeId) {
+        const url = `/buildings/${buildingId}/extension/credits/${typeId}?redirect_building_id=${buildingId}`;
+        const body = new URLSearchParams();
+        body.set('_method', 'post');
+        body.set('authenticity_token', csrfToken());
+        const res = await fetch(url, {
+            method: 'POST', credentials: 'same-origin', redirect: 'manual',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+            body: body.toString(),
+        });
+        return res.status === 302 || res.ok || res.status === 0;
+    }
+
     let lastData = null;
 
     async function scan(panel) {
@@ -172,60 +231,57 @@
         const $status = panel.querySelector('#zl-status');
         const $list = panel.querySelector('#zl-list');
         if (!lastData) { $status.innerHTML = 'Bereit – „⟳ Prüfen" liest die Polizeiwachen.'; $list.innerHTML = ''; return; }
-        const totalReady = lastData.reduce((s, x) => s + x.ready, 0);
-        const totalBuilding = lastData.reduce((s, x) => s + x.building, 0);
-        const totalFree = lastData.reduce((s, x) => s + x.free, 0);
-        $status.innerHTML = `<b>${lastData.length}</b> Polizeiwachen · `
-            + `<span style="color:#a6e3a1;">${totalReady} Zellen fertig</span> · `
-            + `<span style="color:#f9e2af;">${totalBuilding} im Bau</span> · `
-            + `<span style="color:#9399b2;">${totalFree} frei (bis ${CONFIG.maxCellsPerStation}/Wache)</span>`;
+        $status.innerHTML = `<b>${lastData.length}</b> Polizeiwachen. Klick auf eine Wache lädt ihre Erweiterungen.`;
         if (!lastData.length) { $list.innerHTML = '<div style="color:#9399b2;padding:8px;">Keine Polizeiwachen gefunden.</div>'; return; }
-        // Sortierung: wenigste fertige Zellen zuerst (dort lohnt Ausbau am meisten)
-        const rows = [...lastData].sort((a, b) => a.ready - b.ready || b.building - a.building);
+        const rows = [...lastData].sort((a, b) => a.name.localeCompare(b.name, 'de'));
         let html = '';
         for (const s of rows) {
-            const bar = [];
-            for (let i = 0; i < CONFIG.maxCellsPerStation; i++) {
-                const col = i < s.ready ? '#a6e3a1' : (i < s.ready + s.building ? '#f9e2af' : '#45475a');
-                bar.push(`<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${col};margin-right:2px;"></span>`);
-            }
-            const canBuild = s.free > 0;
-            html += `<div style="padding:6px 4px;border-bottom:1px solid #313244;">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <a href="/buildings/${s.id}" style="color:#cdd6f4;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${s.name}</a>
-                    <span style="font-size:12px;white-space:nowrap;margin:0 8px;"><b style="color:#a6e3a1;">${s.ready}</b><span style="color:#9399b2;">/${CONFIG.maxCellsPerStation}</span>${s.building ? ` <span style="color:#f9e2af;">(+${s.building})</span>` : ''}</span>
-                    ${canBuild ? `<button class="zl-build" data-id="${s.id}" title="Eine Zelle mit Credits bauen" style="background:#a6e3a1;color:#1e1e2e;border:none;border-radius:4px;font-size:11px;font-weight:600;padding:3px 7px;cursor:pointer;white-space:nowrap;">+1 Zelle</button>` : `<span style="font-size:11px;color:#9399b2;white-space:nowrap;">voll</span>`}
+            html += `<div class="zl-station" data-id="${s.id}" style="padding:6px 4px;border-bottom:1px solid #313244;">
+                <div class="zl-head" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
+                    <b style="color:#cdd6f4;">▶ ${s.name}</b>
+                    <span style="font-size:11px;color:#9399b2;">Zellen ${s.ready}/${CONFIG.maxCellsPerStation}${s.building ? ` (+${s.building})` : ''}</span>
                 </div>
-                <div style="margin-top:3px;">${bar.join('')}</div>
+                <div class="zl-exts" style="display:none;margin-top:6px;padding-left:10px;"></div>
             </div>`;
         }
         $list.innerHTML = html;
-        // Bau-Buttons verdrahten
-        for (const btn of $list.querySelectorAll('.zl-build')) {
-            btn.onclick = async () => {
-                const id = btn.getAttribute('data-id');
-                const b = rawById[id];
-                if (!b) return;
-                const typeId = nextCellTypeId(b);
-                if (typeId == null) { btn.textContent = 'voll'; return; }
-                btn.disabled = true; btn.textContent = '…';
+        // Aufklapp-Logik: beim ersten Öffnen die Erweiterungen der Wache laden
+        for (const st of $list.querySelectorAll('.zl-station')) {
+            const id = st.getAttribute('data-id');
+            const head = st.querySelector('.zl-head');
+            const box = st.querySelector('.zl-exts');
+            head.onclick = async () => {
+                const open = box.style.display !== 'none';
+                if (open) { box.style.display = 'none'; head.querySelector('b').textContent = head.querySelector('b').textContent.replace('▼', '▶'); return; }
+                box.style.display = 'block';
+                head.querySelector('b').textContent = head.querySelector('b').textContent.replace('▶', '▼');
+                if (box.getAttribute('data-loaded')) return;
+                box.innerHTML = '<span style="color:#9399b2;font-size:11px;">lade Erweiterungen…</span>';
                 try {
-                    const ok = await buildCell(id, typeId);
-                    if (ok) {
-                        // lokalen Zustand aktualisieren: als "im Bau" markieren, dann neu rendern
-                        b.extensions = b.extensions || [];
-                        b.extensions.push({ caption: 'Zelle', available: false, type_id: typeId });
-                        const st = lastData.find(x => x.id === id);
-                        if (st) { const c = countCells(b); st.ready = c.ready; st.building = c.building; st.free = c.free; }
-                        render(panel);
-                    } else {
-                        btn.disabled = false; btn.textContent = '+1 Zelle';
-                        alert('Bau fehlgeschlagen – vermutlich zu wenig Credits oder Maximum erreicht.');
+                    const exts = await loadExtensions(id);
+                    box.setAttribute('data-loaded', '1');
+                    if (!exts.length) { box.innerHTML = '<span style="color:#9399b2;font-size:11px;">Keine baubaren Erweiterungen (alles ausgebaut).</span>'; return; }
+                    box.innerHTML = exts.map(e => `
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;">
+                            <span style="font-size:12px;">${e.name}${e.builtInfo ? ` <span style="color:#9399b2;">${e.builtInfo}</span>` : ''}</span>
+                            <button class="zl-buildext" data-bid="${id}" data-tid="${e.typeId}" title="Mit Credits bauen"
+                                style="background:#a6e3a1;color:#1e1e2e;border:none;border-radius:4px;font-size:11px;font-weight:600;padding:3px 8px;cursor:pointer;white-space:nowrap;">
+                                ${e.priceTxt || 'bauen'}
+                            </button>
+                        </div>`).join('');
+                    // Bau-Buttons verdrahten (Ein-Klick, Credits, keine Bestätigung)
+                    for (const bb of box.querySelectorAll('.zl-buildext')) {
+                        bb.onclick = async () => {
+                            const bid = bb.getAttribute('data-bid'), tid = parseInt(bb.getAttribute('data-tid'), 10);
+                            bb.disabled = true; const old = bb.textContent; bb.textContent = '…';
+                            try {
+                                const ok = await buildExtension(bid, tid);
+                                if (ok) { bb.textContent = '✓ im Bau'; bb.style.background = '#f9e2af'; }
+                                else { bb.disabled = false; bb.textContent = old; alert('Bau fehlgeschlagen – zu wenig Credits oder nicht baubar.'); }
+                            } catch (err) { bb.disabled = false; bb.textContent = old; alert('Fehler: ' + err.message); }
+                        };
                     }
-                } catch (e) {
-                    btn.disabled = false; btn.textContent = '+1 Zelle';
-                    alert('Fehler beim Bauen: ' + e.message);
-                }
+                } catch (e) { box.innerHTML = `<span style="color:#f38ba8;font-size:11px;">Fehler: ${e.message}</span>`; }
             };
         }
     }
@@ -238,7 +294,7 @@
         panel.style.cssText = 'position:fixed;top:150px;right:20px;z-index:99999;width:420px;max-height:82vh;display:flex;flex-direction:column;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:10px;padding:14px;font:13px/1.45 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);';
         panel.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <b style="font-size:14px;">🚔 Zellen-Übersicht</b>
+                <b style="font-size:14px;">🚔 Polizei-Erweiterungen</b>
                 <div>
                     <button id="zl-scan" title="Polizeiwachen prüfen" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">⟳ Prüfen</button>
                     <button id="zl-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
@@ -246,7 +302,7 @@
             </div>
             <div id="zl-status" style="margin-bottom:6px;font-size:12px;">Bereit – „⟳ Prüfen" liest die Polizeiwachen.</div>
             <div id="zl-list" style="overflow:auto;flex:1;"></div>
-            <div style="color:#9399b2;font-size:10px;margin-top:8px;">🟩 fertig · 🟨 im Bau · ⬜ frei (Max ${CONFIG.maxCellsPerStation}/Wache). Quelle: /api/buildings. Klick öffnet die Wache.</div>
+            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Klick auf eine Wache zeigt ihre Erweiterungen mit Preis. Bauen erfolgt mit CREDITS (Coins gesperrt), ohne Rückfrage. Quelle: /api/buildings + Wachenseite.</div>
         `;
         document.body.appendChild(panel);
         panel.querySelector('#zl-close').onclick = () => panel.remove();
@@ -254,5 +310,5 @@
         render(panel);
     }
 
-    ensureToolsMenu().add('zl-openbtn', '🚔 Zellen-Übersicht', () => buildPanel(), 60);
+    ensureToolsMenu().add('zl-openbtn', '🚔 Polizei-Erweiterungen', () => buildPanel(), 60);
 })();
