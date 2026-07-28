@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Einsatz-Voraussetzungen (was fehlt)
 // @namespace    http://tampermonkey.net/
-// @version      1.02
+// @version      1.03
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-einsatz-voraussetzungen.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-einsatz-voraussetzungen.user.js
 // @description  Wertet die Einsatz-Übersicht (/einsaetze) aus und zeigt, welche Gebäude/Fachgruppen fehlen, um Einsätze zu generieren. Zwei Ansichten: Gesamtbedarf gebündelt und pro Einsatztyp.
@@ -87,12 +87,15 @@
     // Die /einsaetze-Liste ist PAGINIERT (viele Seiten, ?page=N). Alle Seiten laden und die
     // Einsatz-Zeilen zusammentragen – sonst sieht man nur die erste Seite (Beleg: nur Feuerwehr-
     // Einsätze sichtbar, THW-Brückenbau fehlte, weil auf späterer Seite).
-    async function fetchPage(n, onProgress) {
-        const res = await fetch(`/einsaetze?page=${n}`, { credentials: 'same-origin', cache: 'no-store' });
-        if (!res.ok) throw new Error(`/einsaetze?page=${n} HTTP ${res.status}`);
+    // WICHTIG: check_requirements=true schaltet die Anforderungs-Spalte frei (entspricht dem Haken
+    // "Anforderungen prüfen"). Ohne diesen Parameter sind die count-requirement-Divs leer -> nichts
+    // wird als fehlend erkannt. per_page groß -> möglichst alles in einem Rutsch.
+    async function fetchPage(n) {
+        const url = `/einsaetze?page=${n}&check_requirements=true&per_page=500`;
+        const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) throw new Error(`/einsaetze HTTP ${res.status}`);
         const html = await res.text();
         const doc = new DOMParser().parseFromString(html, 'text/html');
-        // Letzte Seitenzahl aus der Pagination bestimmen (einmalig auf Seite 1)
         let lastPage = 1;
         for (const a of doc.querySelectorAll('a[href*="einsaetze?page="]')) {
             const m = (a.getAttribute('href') || '').match(/page=(\d+)/);
