@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Einsatz-Voraussetzungen (was fehlt)
 // @namespace    http://tampermonkey.net/
-// @version      1.00
+// @version      1.01
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-einsatz-voraussetzungen.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-einsatz-voraussetzungen.user.js
 // @description  Wertet die Einsatz-Übersicht (/einsaetze) aus und zeigt, welche Gebäude/Fachgruppen fehlen, um Einsätze zu generieren. Zwei Ansichten: Gesamtbedarf gebündelt und pro Einsatztyp.
@@ -106,17 +106,19 @@
             const name = linkEl ? linkEl.textContent.trim() : '(unbekannt)';
             const reqs = [];
             for (const rq of row.querySelectorAll('.count-requirement')) {
-                const fulfilled = rq.classList.contains('fulfilled');
                 const raw = rq.textContent.replace(/\s+/g, ' ').trim();
-                // "(n)" am Ende = fehlende Anzahl
+                // Die "(n)"-Klammer am Ende ist der ZUVERLÄSSIGE Marker: sie erscheint NUR, wenn n fehlen.
+                // Die CSS-Klasse "fulfilled" ist NICHT zuverlässig (fehlt teils auch bei erfüllten) –
+                // Beleg (Brennender Abfallcontainer): "1 Feuerwache" ohne Klammer trotz vieler Wachen.
                 const missM = raw.match(/\((\d+)\)\s*$/);
                 const missing = missM ? parseInt(missM[1], 10) : 0;
-                // Label ohne die "(n)"-Klammer und ohne führende Bedarfszahl behalten wir voll lesbar
                 const label = raw.replace(/\s*\(\d+\)\s*$/, '').trim();
-                reqs.push({ label, fulfilled, missing });
+                reqs.push({ label, fulfilled: missing === 0, missing });
             }
-            const unmet = reqs.filter(r => !r.fulfilled);
-            if (isError || unmet.length) missions.push({ name, reqs, unmet });
+            const unmet = reqs.filter(r => r.missing > 0);
+            // Nur aufnehmen, wenn tatsächlich etwas fehlt. Die "error"-Klasse allein genügt NICHT
+            // (sie steht auch an bereits erfüllten Varianten-Zeilen).
+            if (unmet.length) missions.push({ name, reqs, unmet });
         }
         return missions;
     }
