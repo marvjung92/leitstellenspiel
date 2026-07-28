@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Einsatz-Voraussetzungen (was fehlt)
 // @namespace    http://tampermonkey.net/
-// @version      1.01
+// @version      1.02
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-einsatz-voraussetzungen.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-einsatz-voraussetzungen.user.js
 // @description  Wertet die Einsatz-Übersicht (/einsaetze) aus und zeigt, welche Gebäude/Fachgruppen fehlen, um Einsätze zu generieren. Zwei Ansichten: Gesamtbedarf gebündelt und pro Einsatztyp.
@@ -84,13 +84,42 @@
     let viewMode = 'summary'; // 'summary' = Gesamtbedarf gebündelt | 'byMission' = pro Einsatztyp
     let lastData = null;
 
-    // Die Voraussetzungs-Tabelle steht nur auf /einsaetze im DOM. Von woanders per fetch nachladen.
-    async function loadEinsaetzeDoc() {
-        if (location.pathname.replace(/\/$/, '') === '/einsaetze') return document;
-        const res = await fetch('/einsaetze', { credentials: 'same-origin', cache: 'no-store' });
-        if (!res.ok) throw new Error(`/einsaetze HTTP ${res.status}`);
+    // Die /einsaetze-Liste ist PAGINIERT (viele Seiten, ?page=N). Alle Seiten laden und die
+    // Einsatz-Zeilen zusammentragen – sonst sieht man nur die erste Seite (Beleg: nur Feuerwehr-
+    // Einsätze sichtbar, THW-Brückenbau fehlte, weil auf späterer Seite).
+    async function fetchPage(n, onProgress) {
+        const res = await fetch(`/einsaetze?page=${n}`, { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) throw new Error(`/einsaetze?page=${n} HTTP ${res.status}`);
         const html = await res.text();
-        return new DOMParser().parseFromString(html, 'text/html');
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        // Letzte Seitenzahl aus der Pagination bestimmen (einmalig auf Seite 1)
+        let lastPage = 1;
+        for (const a of doc.querySelectorAll('a[href*="einsaetze?page="]')) {
+            const m = (a.getAttribute('href') || '').match(/page=(\d+)/);
+            if (m) lastPage = Math.max(lastPage, parseInt(m[1], 10));
+        }
+        return { doc, lastPage };
+    }
+
+    async function loadAllMissions(onProgress) {
+        const first = await fetchPage(1);
+        let all = parse(first.doc);
+        const last = first.lastPage;
+        for (let p = 2; p <= last; p++) {
+            if (onProgress) onProgress(p, last);
+            const { doc } = await fetchPage(p);
+            all = all.concat(parse(doc));
+            await new Promise(r => setTimeout(r, 120)); // Server schonen
+        }
+        // Dedupe nach Einsatzname (Varianten-Zeilen desselben Einsatzes zusammenführen: schlimmster Fall zählt)
+        const byName = new Map();
+        for (const m of all) {
+            if (!byName.has(m.name)) { byName.set(m.name, m); continue; }
+            const ex = byName.get(m.name);
+            // die Zeile mit mehr fehlenden Anforderungen behalten
+            if (m.unmet.length > ex.unmet.length) byName.set(m.name, m);
+        }
+        return [...byName.values()];
     }
 
     // Parsen: pro Einsatztyp die fehlenden Anforderungen sammeln.
@@ -186,9 +215,10 @@
         running = true;
         const $status = panel.querySelector('#ev-status');
         try {
-            $status.innerHTML = 'Lade Einsatz-Übersicht…';
-            const doc = await loadEinsaetzeDoc();
-            lastData = parse(doc);
+            $status.innerHTML = 'Lade Einsatz-Übersicht (Seite 1)…';
+            lastData = await loadAllMissions((p, last) => {
+                $status.innerHTML = `Lade Einsatz-Übersicht… <b>Seite ${p}/${last}</b>`;
+            });
             render(panel);
         } catch (e) {
             $status.innerHTML = `<span style="color:#f38ba8;">Fehler: ${e.message}</span>`;
