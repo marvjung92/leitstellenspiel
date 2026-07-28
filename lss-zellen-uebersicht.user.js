@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Zellen-Übersicht (Polizeiwachen)
 // @namespace    http://tampermonkey.net/
-// @version      1.01
+// @version      1.02
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @description  Zeigt pro Polizeiwache die Zellen: fertig, im Bau und frei (bis Maximum). Aus /api/buildings, ein schneller Abruf. Modular für weitere Gebäudetypen erweiterbar.
@@ -208,7 +208,6 @@
                 if (!b) return;
                 const typeId = nextCellTypeId(b);
                 if (typeId == null) { btn.textContent = 'voll'; return; }
-                if (!confirm(`In "${b.caption || id}" eine Zelle mit Credits bauen?`)) return;
                 btn.disabled = true; btn.textContent = '…';
                 try {
                     const ok = await buildCell(id, typeId);
