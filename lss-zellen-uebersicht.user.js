@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Zellen-Übersicht (Polizeiwachen)
 // @namespace    http://tampermonkey.net/
-// @version      1.04
+// @version      1.06
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @description  Zeigt pro Polizeiwache die Zellen: fertig, im Bau und frei (bis Maximum). Aus /api/buildings, ein schneller Abruf. Modular für weitere Gebäudetypen erweiterbar.
@@ -15,8 +15,13 @@
     if (window.top !== window.self) return;
 
     const CONFIG = {
-        maxCellsPerStation: 10,   // maximal ausbaubare Zellen pro Polizeiwache (steht nicht in der API)
+        maxCellsPerStation: 10,
     };
+    const BUILDING_TYPES = {
+        police: { id: 6, label: '🚔 Polizei', icon: '🚔' },
+        fire:   { id: 0, label: '🚒 Feuerwehr', icon: '🚒' },
+    };
+    let activeType = 'police';
 
     // ==== Gemeinsames Analyse-Menü (geteilt über alle Analyse-Skripte) ====
     function ensureToolsMenu() {
@@ -174,8 +179,10 @@
             const tr = a.closest('tr');
             if (tr) {
                 const cellTxt = tr.textContent.replace(/\s+/g, ' ').trim();
-                const known = cellTxt.match(/(Zelle|Diensthundestaffel|Diensthundstaffel|Motorradstaffel|Großwache|Großgewahrsam|Reiterstaffel|SEK|Wasserschutzpolizei)/);
-                if (known) name = known[1];
+                const known = cellTxt.match(/(Zelle|Diensthundestaffel|Diensthundstaffel|Motorradstaffel|Großwache|Großgewahrsam|Reiterstaffel|SEK|Wasserschutzpolizei|Rettungswache|Löschzug|Stellplatz[^,]*|Schlauchwagen|AB-[A-Za-zÄÖÜ/]+|Anh [A-Za-zÄÖÜ]+)/);
+                if (known) name = known[1].trim();
+                // sonst: erste Tabellenzelle (oft der Erweiterungsname)
+                if (!name) { const td = tr.querySelector('td'); if (td) name = td.textContent.replace(/\s+/g, ' ').trim().slice(0, 40); }
             }
             if (!name) {
                 // Fallback: bekannter Name irgendwo im 400-Zeichen-Fenster vor dem Link
@@ -215,10 +222,11 @@
             const all = await loadBuildings();
             // building_type 6 = Polizeiwache (aus deinem API-Objekt bestätigt)
             rawById = {};
-            const stations = all.filter(b => Number(b.building_type) === 6).map(b => {
+            const wantType = BUILDING_TYPES[activeType].id;
+            const stations = all.filter(b => Number(b.building_type) === wantType).map(b => {
                 rawById[String(b.id)] = b;
-                const c = countCells(b);
-                return { id: String(b.id), name: b.caption || `#${b.id}`, prisoners: Number(b.prisoner_count) || 0, ...c };
+                const c = activeType === 'police' ? countCells(b) : { ready: 0, building: 0, free: 0 };
+                return { id: String(b.id), name: b.caption || `#${b.id}`, ...c };
             });
             lastData = stations;
             render(panel);
@@ -231,15 +239,15 @@
         const $status = panel.querySelector('#zl-status');
         const $list = panel.querySelector('#zl-list');
         if (!lastData) { $status.innerHTML = 'Bereit – „⟳ Prüfen" liest die Polizeiwachen.'; $list.innerHTML = ''; return; }
-        $status.innerHTML = `<b>${lastData.length}</b> Polizeiwachen. Klick auf eine Wache lädt ihre Erweiterungen.`;
-        if (!lastData.length) { $list.innerHTML = '<div style="color:#9399b2;padding:8px;">Keine Polizeiwachen gefunden.</div>'; return; }
+        $status.innerHTML = `<b>${lastData.length}</b> ${BUILDING_TYPES[activeType].label}-Wachen. Klick auf eine Wache lädt ihre Erweiterungen.`;
+        if (!lastData.length) { $list.innerHTML = `<div style="color:#9399b2;padding:8px;">Keine ${BUILDING_TYPES[activeType].label}-Wachen gefunden.</div>`; return; }
         const rows = [...lastData].sort((a, b) => a.name.localeCompare(b.name, 'de'));
         let html = '';
         for (const s of rows) {
             html += `<div class="zl-station" data-id="${s.id}" style="padding:6px 4px;border-bottom:1px solid #313244;">
                 <div class="zl-head" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
                     <b style="color:#cdd6f4;">▶ ${s.name}</b>
-                    <span style="font-size:11px;color:#9399b2;">Zellen ${s.ready}/${CONFIG.maxCellsPerStation}${s.building ? ` (+${s.building})` : ''}</span>
+                    ${activeType === 'police' ? `<span style="font-size:11px;color:#9399b2;">Zellen ${s.ready}/${CONFIG.maxCellsPerStation}${s.building ? ` (+${s.building})` : ''}</span>` : ''}
                 </div>
                 <div class="zl-exts" style="display:none;margin-top:6px;padding-left:10px;"></div>
             </div>`;
@@ -294,21 +302,34 @@
         panel.style.cssText = 'position:fixed;top:150px;right:20px;z-index:99999;width:420px;max-height:82vh;display:flex;flex-direction:column;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:10px;padding:14px;font:13px/1.45 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);';
         panel.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <b style="font-size:14px;">🚔 Polizei-Erweiterungen</b>
+                <b style="font-size:14px;">🏗️ Gebäude-Erweiterungen</b>
                 <div>
                     <button id="zl-scan" title="Polizeiwachen prüfen" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:13px;padding:2px 7px;">⟳ Prüfen</button>
                     <button id="zl-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
                 </div>
             </div>
-            <div id="zl-status" style="margin-bottom:6px;font-size:12px;">Bereit – „⟳ Prüfen" liest die Polizeiwachen.</div>
+            <div style="display:flex;gap:6px;margin-bottom:8px;">
+                <button class="zl-type" data-t="police" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#89b4fa;color:#1e1e2e;">🚔 Polizei</button>
+                <button class="zl-type" data-t="fire" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🚒 Feuerwehr</button>
+            </div>
+            <div id="zl-status" style="margin-bottom:6px;font-size:12px;">Bereit – „⟳ Prüfen" liest die Wachen.</div>
             <div id="zl-list" style="overflow:auto;flex:1;"></div>
             <div style="color:#9399b2;font-size:10px;margin-top:8px;">Klick auf eine Wache zeigt ihre Erweiterungen mit Preis. Bauen erfolgt mit CREDITS (Coins gesperrt), ohne Rückfrage. Quelle: /api/buildings + Wachenseite.</div>
         `;
         document.body.appendChild(panel);
         panel.querySelector('#zl-close').onclick = () => panel.remove();
         panel.querySelector('#zl-scan').onclick = () => scan(panel);
+        for (const tb of panel.querySelectorAll('.zl-type')) {
+            tb.onclick = () => {
+                activeType = tb.getAttribute('data-t');
+                for (const b of panel.querySelectorAll('.zl-type')) { b.style.background = '#45475a'; b.style.color = '#cdd6f4'; }
+                tb.style.background = '#89b4fa'; tb.style.color = '#1e1e2e';
+                lastData = null;
+                scan(panel);
+            };
+        }
         render(panel);
     }
 
-    ensureToolsMenu().add('zl-openbtn', '🚔 Polizei-Erweiterungen', () => buildPanel(), 60);
+    ensureToolsMenu().add('zl-openbtn', '🏗️ Gebäude-Erweiterungen', () => buildPanel(), 60);
 })();
