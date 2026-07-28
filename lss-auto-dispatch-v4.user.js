@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.54
+// @version      5.55
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – jetzt mit Debug-Logging und Log-Export.
@@ -84,13 +84,13 @@
         // wieder freigegeben, wenn die Last auf speedResumeAt oder weniger gesunken ist (tiefe Hysterese).
         autoSpeed: true,
         speedLadder: [                 // Stufen: bis upTo Einsätze -> speed-Parameter (siehe SPEED_LABEL)
-            { upTo: 25, speed: 3 },    // 0-25  -> 3x   (Band verlängert: volles Tempo bis 25 offene Einsätze)
-            { upTo: 45, speed: 2 },    // 26-45 -> 2x
-            { upTo: 60, speed: 1 },    // 46-60 -> 1x
-            { upTo: 69, speed: 7 },    // 61-69 -> 0.5x
+            { upTo: 35, speed: 3 },    // 0-35  -> 3x   (Band weiter verlängert: volles Tempo bis 35 offene Einsätze)
+            { upTo: 50, speed: 2 },    // 36-50 -> 2x
+            { upTo: 62, speed: 1 },    // 51-62 -> 1x
+            { upTo: 69, speed: 7 },    // 63-69 -> 0.5x
         ],                             // > 69 -> Pause (endet erst wieder bei <= speedResumeAt)
         speedPauseAbove: 70,           // > so viele Einsätze -> Pause (keine neuen Einsätze)
-        speedResumeAt: 25,             // Pause erst beenden, wenn wieder <= so viele Einsätze offen sind (passt zum 3x-Band)
+        speedResumeAt: 35,             // Pause erst beenden, wenn wieder <= so viele Einsätze offen sind (passt zum 3x-Band)
         speedMinHoldMs: 90000,         // Mindesthaltezeit zwischen zwei Stufenwechseln (Flatter-Schutz an Stufengrenzen)
         speedNormal: 1,                // /missionSpeed?speed=1  = 1x (Fallback, z.B. beim Aufheben der Pause im manuellen Modus)
         speedPause: 6,                 // /missionSpeed?speed=6  = Pause (es werden keine Einsätze generiert)
@@ -942,7 +942,7 @@
     `;
     panel.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:6px;">
-            <b style="white-space:nowrap;">🚨 Auto-Dispatch v5.54</b>
+            <b style="white-space:nowrap;">🚨 Auto-Dispatch v5.55</b>
             <span style="display:flex;gap:4px;">
                 <button id="ad-toggle" style="cursor:pointer;border:none;border-radius:4px;padding:2px 10px;background:#a6e3a1;color:#1e1e2e;font-weight:bold;">Start</button>
                 <button id="ad-minimize" title="Panel minimieren/maximieren" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:2px 8px;background:#313244;color:#cdd6f4;font-weight:bold;">–</button>
@@ -2945,5 +2945,5 @@
         timer = setTimeout(scanLoop, jitter(CONFIG.scanInterval));
     }
 
-    log('v5.54 geladen – Start drücken.');
+    log('v5.55 geladen – Start drücken.');
 })();
