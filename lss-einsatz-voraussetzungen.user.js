@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Einsatz-Voraussetzungen (was fehlt)
 // @namespace    http://tampermonkey.net/
-// @version      1.03
+// @version      1.05
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-einsatz-voraussetzungen.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-einsatz-voraussetzungen.user.js
 // @description  Wertet die Einsatz-Übersicht (/einsaetze) aus und zeigt, welche Gebäude/Fachgruppen fehlen, um Einsätze zu generieren. Zwei Ansichten: Gesamtbedarf gebündelt und pro Einsatztyp.
@@ -105,14 +105,38 @@
     }
 
     async function loadAllMissions(onProgress) {
-        const first = await fetchPage(1);
-        let all = parse(first.doc);
-        const last = first.lastPage;
-        for (let p = 2; p <= last; p++) {
-            if (onProgress) onProgress(p, last);
-            const { doc } = await fetchPage(p);
-            all = all.concat(parse(doc));
-            await new Promise(r => setTimeout(r, 120)); // Server schonen
+        let all = [];
+        let last = 1;
+        const onEinsaetze = location.pathname.replace(/\/$/, '') === '/einsaetze';
+        if (onEinsaetze) {
+            // Aktuelles DOM nutzen – hier ist der Haken "Anforderungen prüfen" korrekt gesetzt und die
+            // gesperrten Einsätze (error-Zeilen) sind vorhanden. Das ist die zuverlässige Quelle.
+            all = parse(document);
+            for (const a of document.querySelectorAll('a[href*="einsaetze?page="]')) {
+                const m = (a.getAttribute('href') || '').match(/page=(\d+)/);
+                if (m) last = Math.max(last, parseInt(m[1], 10));
+            }
+            // Folgeseiten per fetch (mit denselben Filtern wie die aktuelle URL) nachladen
+            const qs = location.search ? location.search.replace(/^\?/, '') + '&' : 'check_requirements=true&';
+            for (let p = 2; p <= last; p++) {
+                if (onProgress) onProgress(p, last);
+                try {
+                    const res = await fetch(`/einsaetze?${qs}page=${p}`, { credentials: 'same-origin', cache: 'no-store' });
+                    if (res.ok) { const doc = new DOMParser().parseFromString(await res.text(), 'text/html'); all = all.concat(parse(doc)); }
+                } catch (e) {}
+                await new Promise(r => setTimeout(r, 120));
+            }
+        } else {
+            // Nicht auf /einsaetze: per fetch holen (Haken-Zustand nicht garantiert -> Hinweis im Panel).
+            const first = await fetchPage(1);
+            all = parse(first.doc);
+            last = first.lastPage;
+            for (let p = 2; p <= last; p++) {
+                if (onProgress) onProgress(p, last);
+                const { doc } = await fetchPage(p);
+                all = all.concat(parse(doc));
+                await new Promise(r => setTimeout(r, 120));
+            }
         }
         // Dedupe nach Einsatzname (Varianten-Zeilen desselben Einsatzes zusammenführen: schlimmster Fall zählt)
         const byName = new Map();
@@ -222,6 +246,13 @@
             lastData = await loadAllMissions((p, last) => {
                 $status.innerHTML = `Lade Einsatz-Übersicht… <b>Seite ${p}/${last}</b>`;
             });
+            const onEinsaetze = location.pathname.replace(/\/$/, '') === '/einsaetze';
+            // Wenn gar keine Anforderungsdaten ankamen: häufigste Ursache ist der fehlende Haken.
+            const anyReq = lastData.some(m => m.reqs && m.reqs.length);
+            if (!anyReq && !onEinsaetze) {
+                $status.innerHTML = '<span style="color:#f9e2af;">Bitte einmal die Seite <a href="/einsaetze" style="color:#89b4fa;">Mögliche Einsätze</a> öffnen, dort den Haken „Anforderungen prüfen" setzen und hier erneut „⟳ Prüfen".</span>';
+                return;
+            }
             render(panel);
         } catch (e) {
             $status.innerHTML = `<span style="color:#f38ba8;">Fehler: ${e.message}</span>`;
