@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Zellen-Übersicht (Polizeiwachen)
 // @namespace    http://tampermonkey.net/
-// @version      1.00
+// @version      1.01
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @description  Zeigt pro Polizeiwache die Zellen: fertig, im Bau und frei (bis Maximum). Aus /api/buildings, ein schneller Abruf. Modular für weitere Gebäudetypen erweiterbar.
@@ -116,6 +116,37 @@
         return { ready, building, free: Math.max(0, CONFIG.maxCellsPerStation - ready - building) };
     }
 
+    function csrfToken() {
+        return document.querySelector('meta[name="csrf-token"]')?.content || '';
+    }
+
+    // Nächste freie type_id einer Wache bestimmen: kleinste 0..max-1, die noch keine Zelle-Extension hat.
+    function nextCellTypeId(b) {
+        const used = new Set();
+        for (const ext of (b.extensions || [])) if (/zelle/i.test(ext.caption || '')) used.add(Number(ext.type_id));
+        for (let i = 0; i < CONFIG.maxCellsPerStation; i++) if (!used.has(i)) return i;
+        return null; // alle belegt
+    }
+
+    // Eine Zelle bauen. Beleg (HAR): POST /buildings/<id>/extension/credits/<typeId>?redirect_building_id=<id>
+    // mit Body _method=post & authenticity_token. Kauf mit Credits. Erfolg = 302.
+    async function buildCell(buildingId, typeId) {
+        const url = `/buildings/${buildingId}/extension/credits/${typeId}?redirect_building_id=${buildingId}`;
+        const body = new URLSearchParams();
+        body.set('_method', 'post');
+        body.set('authenticity_token', csrfToken());
+        const res = await fetch(url, {
+            method: 'POST', credentials: 'same-origin', redirect: 'manual',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+            body: body.toString(),
+        });
+        // 302 (Redirect) oder ok = Erfolg. Bei opaqueredirect (redirect:manual) ist status 0 -> auch ok.
+        return res.status === 302 || res.ok || res.status === 0;
+    }
+
+    // Rohdaten der Gebäude behalten, damit wir extensions/type_id fürs Bauen zur Hand haben.
+    let rawById = {};
+
     let lastData = null;
 
     async function scan(panel) {
@@ -124,7 +155,9 @@
             $status.innerHTML = 'Lade Gebäude…';
             const all = await loadBuildings();
             // building_type 6 = Polizeiwache (aus deinem API-Objekt bestätigt)
+            rawById = {};
             const stations = all.filter(b => Number(b.building_type) === 6).map(b => {
+                rawById[String(b.id)] = b;
                 const c = countCells(b);
                 return { id: String(b.id), name: b.caption || `#${b.id}`, prisoners: Number(b.prisoner_count) || 0, ...c };
             });
@@ -156,15 +189,46 @@
                 const col = i < s.ready ? '#a6e3a1' : (i < s.ready + s.building ? '#f9e2af' : '#45475a');
                 bar.push(`<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${col};margin-right:2px;"></span>`);
             }
+            const canBuild = s.free > 0;
             html += `<div style="padding:6px 4px;border-bottom:1px solid #313244;">
-                <div style="display:flex;justify-content:space-between;align-items:baseline;">
-                    <a href="/buildings/${s.id}" style="color:#cdd6f4;">${s.name}</a>
-                    <span style="font-size:12px;"><b style="color:#a6e3a1;">${s.ready}</b><span style="color:#9399b2;">/${CONFIG.maxCellsPerStation}</span>${s.building ? ` <span style="color:#f9e2af;">(+${s.building} im Bau)</span>` : ''}</span>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <a href="/buildings/${s.id}" style="color:#cdd6f4;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${s.name}</a>
+                    <span style="font-size:12px;white-space:nowrap;margin:0 8px;"><b style="color:#a6e3a1;">${s.ready}</b><span style="color:#9399b2;">/${CONFIG.maxCellsPerStation}</span>${s.building ? ` <span style="color:#f9e2af;">(+${s.building})</span>` : ''}</span>
+                    ${canBuild ? `<button class="zl-build" data-id="${s.id}" title="Eine Zelle mit Credits bauen" style="background:#a6e3a1;color:#1e1e2e;border:none;border-radius:4px;font-size:11px;font-weight:600;padding:3px 7px;cursor:pointer;white-space:nowrap;">+1 Zelle</button>` : `<span style="font-size:11px;color:#9399b2;white-space:nowrap;">voll</span>`}
                 </div>
                 <div style="margin-top:3px;">${bar.join('')}</div>
             </div>`;
         }
         $list.innerHTML = html;
+        // Bau-Buttons verdrahten
+        for (const btn of $list.querySelectorAll('.zl-build')) {
+            btn.onclick = async () => {
+                const id = btn.getAttribute('data-id');
+                const b = rawById[id];
+                if (!b) return;
+                const typeId = nextCellTypeId(b);
+                if (typeId == null) { btn.textContent = 'voll'; return; }
+                if (!confirm(`In "${b.caption || id}" eine Zelle mit Credits bauen?`)) return;
+                btn.disabled = true; btn.textContent = '…';
+                try {
+                    const ok = await buildCell(id, typeId);
+                    if (ok) {
+                        // lokalen Zustand aktualisieren: als "im Bau" markieren, dann neu rendern
+                        b.extensions = b.extensions || [];
+                        b.extensions.push({ caption: 'Zelle', available: false, type_id: typeId });
+                        const st = lastData.find(x => x.id === id);
+                        if (st) { const c = countCells(b); st.ready = c.ready; st.building = c.building; st.free = c.free; }
+                        render(panel);
+                    } else {
+                        btn.disabled = false; btn.textContent = '+1 Zelle';
+                        alert('Bau fehlgeschlagen – vermutlich zu wenig Credits oder Maximum erreicht.');
+                    }
+                } catch (e) {
+                    btn.disabled = false; btn.textContent = '+1 Zelle';
+                    alert('Fehler beim Bauen: ' + e.message);
+                }
+            };
+        }
     }
 
     function buildPanel() {
