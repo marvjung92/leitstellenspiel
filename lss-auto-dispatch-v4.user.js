@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.55
+// @version      5.56
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – jetzt mit Debug-Logging und Log-Export.
@@ -36,7 +36,7 @@
         maxPrisonerTransportsPerScan: 5, // max. Gefangenentransporte pro Durchlauf (eigener Topf, hat Vorrang)
         maxVehiclesPerAlarm: 40,   // Sicherheits-Notbremse pro POST (Großeinsätze brauchen mehr als 20)
         auditDispatch: true,       // [AUDIT]-Zeilen pro Alarm ins Log schreiben (Über-Alarmierungs-Analyse). Auswertung: window.adAudit() in der Konsole oder Button im Panel.
-        soloTrailerTypeIds: [101, 96, 70, 174, 44, 183, 43, 146, 136], // Anhänger-Typen, die ALLEINE gesendet werden (Spiel wählt Zugfahrzeug selbst): Anh SwPu=101, Außenlastbehälter=96, Boot/MZB=70, Anh TeSi=174, Anh Drucklufterzeugung=44, Anh Plattform (FGr BrB)=183, Radlader (BRmG R)=43, Anh FüLa=146, Anh Pferdetransport=136 (vom Nutzer bestätigt: Träger kommt automatisch mit).
+        soloTrailerTypeIds: [101, 102, 96, 70, 174, 44, 183, 43, 146, 136], // Anhänger-Typen, die ALLEINE gesendet werden (Spiel wählt Zugfahrzeug selbst): Anh SwPu=101, Anh 7=102, Außenlastbehälter=96, Boot/MZB=70, Anh TeSi=174, Anh Drucklufterzeugung=44, Anh Plattform (FGr BrB)=183, Radlader (BRmG R)=43, Anh FüLa=146, Anh Pferdetransport=136 (vom Nutzer bestätigt: Träger kommt automatisch mit).
         // Zugfahrzeug-Anforderung überspringen, wenn der zugehörige Anhänger im selben Einsatz
         // gefordert wird: der allein gesendete Anhänger bringt sein Zugfahrzeug automatisch mit
         // und deckt damit BEIDE Anforderungen. Format: { ZugfahrzeugTypId: AnhängerTypId }
@@ -198,9 +198,10 @@
         'Rettungshundestaffel': [91],
         'Rettungshundestaffeln': [91],   // Mehrzahl (z.B. "3x Rettungshundestaffeln") – fehlte bisher
         'Rettungshundefahrzeug': [91],
-        'Schmutzwasserpumpen': [101],
-        'Schmutzwasserpumpe': [101],
-        'Anh SwPu': [101],
+        'Schmutzwasserpumpen': [101, 102],  // Typ 101 = Anh SwPu, Typ 102 = Anh 7 – BEIDE tragen die
+        'Schmutzwasserpumpe': [101, 102],   //   Schmutzwasserpumpe. Typ 102 fehlte bisher -> Engpass, obwohl
+        'Anh SwPu': [101],                  //   Anh-7-Fahrzeuge frei waren (Beleg 29.07.: 3 Einsätze offen, Bestand 101:0).
+        'Anh 7': [102],
         'MEK-Fahrzeug': [81],
         'MEK-Fahrzeuge': [81],
         'MEK': [81],
@@ -780,7 +781,7 @@
         0: 'LF', 1: 'LF', 6: 'LF', 7: 'LF', 8: 'LF', 30: 'LF',
         28: 'RTW', 29: 'NEF', 31: 'RTH', 3: 'ELW 1', 34: 'ELW 2',
         32: 'FuStW', 81: 'MEK', 70: 'Boot/MZB', 72: 'WaWe', 64: 'GW-Wasserrettung',
-        101: 'Anh SwPu', 96: 'Außenlastbehälter', 110: 'NEA50', 156: 'Polizeihubschrauber',
+        101: 'Anh SwPu', 102: 'Anh 7', 96: 'Außenlastbehälter', 110: 'NEA50', 156: 'Polizeihubschrauber',
     };
     const dynTypeNames = {}; // ID -> Caption aus der LSSM-Typliste (füllt sich beim Laden)
     const vtName = id => VEHICLE_TYPE_NAMES[id] || dynTypeNames[id] || ('Typ ' + id);
@@ -942,7 +943,7 @@
     `;
     panel.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:6px;">
-            <b style="white-space:nowrap;">🚨 Auto-Dispatch v5.55</b>
+            <b style="white-space:nowrap;">🚨 Auto-Dispatch v5.56</b>
             <span style="display:flex;gap:4px;">
                 <button id="ad-toggle" style="cursor:pointer;border:none;border-radius:4px;padding:2px 10px;background:#a6e3a1;color:#1e1e2e;font-weight:bold;">Start</button>
                 <button id="ad-minimize" title="Panel minimieren/maximieren" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:2px 8px;background:#313244;color:#cdd6f4;font-weight:bold;">–</button>
@@ -2945,5 +2946,5 @@
         timer = setTimeout(scanLoop, jitter(CONFIG.scanInterval));
     }
 
-    log('v5.55 geladen – Start drücken.');
+    log('v5.56 geladen – Start drücken.');
 })();
