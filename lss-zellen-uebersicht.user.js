@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Zellen-Übersicht (Polizeiwachen)
 // @namespace    http://tampermonkey.net/
-// @version      1.07
+// @version      1.08
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
-// @description  Zeigt pro Polizeiwache die Zellen: fertig, im Bau und frei (bis Maximum). Aus /api/buildings, ein schneller Abruf. Modular für weitere Gebäudetypen erweiterbar.
+// @description  Zeigt pro Polizeiwache die Zellen: fertig, im Bau und frei (bis Maximum). Aus /api/buildings, ein schneller Abruf. Update-Filter blendet Wachen aus, die eine gewählte Erweiterung schon haben. Modular für weitere Gebäudetypen erweiterbar.
 // @match        https://www.leitstellenspiel.de/*
 // @grant        none
 // @run-at       document-idle
@@ -153,50 +153,95 @@
     // Rohdaten der Gebäude behalten, damit wir extensions/type_id fürs Bauen zur Hand haben.
     let rawById = {};
 
+    // Update-Filter-Cache: buildingId -> Map(Erweiterungsname -> 'not_built' | 'building' | 'built').
+    // Wird beim Laden einer Wachen-Detailseite nebenbei mitbefüllt (kein Extra-Request).
+    let statusByStation = {};
 
-    // Erweiterungen einer Polizeiwache von ihrer Detailseite lesen (/buildings/<id>).
-    // Nur der credits-Kauf wird angeboten (coins gesperrt). Liefert je Erweiterung Name, type_id,
-    // Preis (Credits) und ob sie bereits gebaut/ausgebaut ist.
+    // Erweiterungs-Zeilen der Detailseite finden. Verlässlicher Anker (per HAR verifiziert):
+    // jede Erweiterungszeile hat im ERSTEN <td> direkt ein <b>Name</b>, gefolgt vom Beschreibungs-<div>.
+    // Das ist der einzige Ort, an dem der Name OHNE Beschreibungstext steht.
+    function collectExtensionRows(doc) {
+        const rows = [];
+        for (const tr of doc.querySelectorAll('tr')) {
+            const firstTd = tr.querySelector(':scope > td:first-child');
+            const b = firstTd ? firstTd.querySelector(':scope > b') : null;
+            if (!b) continue;
+            const name = b.textContent.replace(/\s+/g, ' ').trim();
+            if (!name) continue;
+            rows.push({ tr, name });
+        }
+        return rows;
+    }
+
+    // Status einer Erweiterungszeile aus der letzten Tabellenspalte ableiten (Beleg: HAR-Analyse
+    // /buildings/<id>): Kauf-Link = noch nicht gebaut, Restzeit-Timer = im Bau, sonst gebaut
+    // (z.B. "Nicht einsatzbereit"-Label oder bereits fertig & einsatzbereit ohne weiteren Hinweis).
+    function deriveExtStatus(tr) {
+        const tds = tr.querySelectorAll('td');
+        const lastTd = tds[tds.length - 1];
+        if (!lastTd) return 'built';
+        if (lastTd.querySelector('a[href*="/extension/credits/"], a[href*="/extension/coins/"]')) return 'not_built';
+        if (lastTd.querySelector('.extension-timer') || /Restzeit/i.test(lastTd.textContent)) return 'building';
+        return 'built';
+    }
+
+    // Erweiterungen einer Wache von ihrer Detailseite lesen (/buildings/<id>).
+    // Nur der credits-Kauf wird angeboten (coins gesperrt). Liefert je baubarer Erweiterung Name,
+    // type_id und Preis (Credits). Befüllt nebenbei statusByStation[buildingId] für den Update-Filter.
     async function loadExtensions(buildingId) {
         const res = await fetch(`/buildings/${buildingId}`, { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) throw new Error(`/buildings/${buildingId} HTTP ${res.status}`);
         const html = await res.text();
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const exts = [];
-        const seen = new Set();
-        // Der Preis steht DIREKT im Link-Text: <a href=".../extension/credits/N">75.000 Credits</a>.
-        // Das ist der zuverlässige Anker. Coins-Links (.../coins/N) werden bewusst ignoriert.
-        for (const a of doc.querySelectorAll('a[href*="/extension/credits/"]')) {
-            const m = (a.getAttribute('href') || '').match(/\/extension\/credits\/(\d+)/);
+        const statusMap = new Map();
+        for (const { tr, name } of collectExtensionRows(doc)) {
+            const status = deriveExtStatus(tr);
+            statusMap.set(name, status);
+            if (status !== 'not_built') continue; // nur baubare Erweiterungen in die Kauf-Liste
+            const link = tr.querySelector('a[href*="/extension/credits/"]');
+            if (!link) continue;
+            const m = (link.getAttribute('href') || '').match(/\/extension\/credits\/(\d+)/);
             if (!m) continue;
             const typeId = parseInt(m[1], 10);
-            if (seen.has(typeId)) continue;
-            seen.add(typeId);
-            const linkTxt = (a.textContent || '').replace(/\s+/g, ' ').trim(); // z.B. "75.000 Credits"
+            const linkTxt = (link.textContent || '').replace(/\s+/g, ' ').trim(); // z.B. "200.000 Credits"
             const priceNum = /credits/i.test(linkTxt) ? parseInt(linkTxt.replace(/[^\d]/g, ''), 10) : null;
             const priceTxt = priceNum ? priceNum.toLocaleString('de-DE') + ' Credits' : (linkTxt || 'bauen');
-            // Namen aus dem Zeilen-/Zellenkontext holen: nächstgelegene Tabellenzeile oder Überschrift.
-            let name = '';
-            const tr = a.closest('tr');
-            if (tr) {
-                const cellTxt = tr.textContent.replace(/\s+/g, ' ').trim();
-                const known = cellTxt.match(/(Zelle|Diensthundestaffel|Diensthundstaffel|Motorradstaffel|Großwache|Großgewahrsam|Reiterstaffel|SEK|Wasserschutzpolizei|Rettungswache|Löschzug|Stellplatz[^,]*|Schlauchwagen|AB-[A-Za-zÄÖÜ/]+|Anh [A-Za-zÄÖÜ]+|Fachgruppe[^,]*|Zugtrupp|Notversorgung|Brückenbau|Räumen|Ortung|Wassergefahren|Bergung|Führung[^,]*|Logistik[^,]*)/);
-                if (known) name = known[1].trim();
-                // sonst: erste Tabellenzelle (oft der Erweiterungsname)
-                if (!name) { const td = tr.querySelector('td'); if (td) name = td.textContent.replace(/\s+/g, ' ').trim().slice(0, 40); }
-            }
-            if (!name) {
-                // Fallback: bekannter Name irgendwo im 400-Zeichen-Fenster vor dem Link
-                const idx = html.indexOf(a.getAttribute('href'));
-                const before = idx > 0 ? html.slice(Math.max(0, idx - 500), idx).replace(/<[^>]+>/g, ' ') : '';
-                const known = before.match(/(Zelle|Diensthundestaffel|Diensthundstaffel|Motorradstaffel|Großwache|Großgewahrsam|Reiterstaffel|SEK|Wasserschutzpolizei)(?![\s\S]*\1)/);
-                name = known ? known[1] : `Erweiterung ${typeId}`;
-            }
-            const builtM = (a.closest('tr')?.textContent || '').match(/Gebaut\s*(\d+)\s*\/\s*(\d+)/i);
-            const builtInfo = builtM ? `${builtM[1]}/${builtM[2]}` : '';
-            exts.push({ typeId, name, priceTxt, priceNum, builtInfo });
+            exts.push({ typeId, name, priceTxt, priceNum });
         }
+        statusByStation[buildingId] = statusMap;
         return exts;
+    }
+
+    // Alle (noch ungeprüften) Wachen des aktuellen Typs nacheinander abfragen, um statusByStation
+    // für den Update-Filter zu befüllen. Mit Fortschrittsanzeige, einzelne Fehler werden übersprungen.
+    async function loadAllStatuses(panel) {
+        const $status = panel.querySelector('#zl-status');
+        const stations = lastData || [];
+        const todo = stations.filter(s => !statusByStation[s.id]);
+        for (let i = 0; i < todo.length; i++) {
+            const s = todo[i];
+            $status.innerHTML = `Prüfe Update-Status… <b>${i + 1}/${todo.length}</b> – ${s.name}`;
+            try { await loadExtensions(s.id); } catch (e) { /* einzelne Wache überspringen, Rest weiterlaufen lassen */ }
+        }
+        populateFilterOptions(panel);
+        render(panel);
+    }
+
+    // Filter-Dropdown mit allen bisher bekannten Erweiterungsnamen (aus dem Status-Cache) befüllen.
+    function populateFilterOptions(panel) {
+        const sel = panel.querySelector('#zl-filter-select');
+        if (!sel) return;
+        const names = new Set();
+        for (const s of (lastData || [])) {
+            const m = statusByStation[s.id];
+            if (m) for (const n of m.keys()) names.add(n);
+        }
+        const prev = sel.value;
+        const sorted = [...names].sort((a, b) => a.localeCompare(b, 'de'));
+        sel.innerHTML = '<option value="">— kein Filter —</option>' +
+            sorted.map(n => `<option value="${n.replace(/"/g, '&quot;')}">${n}</option>`).join('');
+        if (sorted.includes(prev)) sel.value = prev;
     }
 
     // Eine Erweiterung mit CREDITS bauen (coins gesperrt). Beleg (HAR):
@@ -230,6 +275,7 @@
                 return { id: String(b.id), name: b.caption || `#${b.id}`, ...c };
             });
             lastData = stations;
+            populateFilterOptions(panel);
             render(panel);
         } catch (e) {
             $status.innerHTML = `<span style="color:#f38ba8;">Fehler: ${e.message}</span>`;
@@ -240,9 +286,26 @@
         const $status = panel.querySelector('#zl-status');
         const $list = panel.querySelector('#zl-list');
         if (!lastData) { $status.innerHTML = 'Bereit – „⟳ Prüfen" liest die Polizeiwachen.'; $list.innerHTML = ''; return; }
-        $status.innerHTML = `<b>${lastData.length}</b> ${BUILDING_TYPES[activeType].label}-Wachen. Klick auf eine Wache lädt ihre Erweiterungen.`;
-        if (!lastData.length) { $list.innerHTML = `<div style="color:#9399b2;padding:8px;">Keine ${BUILDING_TYPES[activeType].label}-Wachen gefunden.</div>`; return; }
-        const rows = [...lastData].sort((a, b) => a.name.localeCompare(b.name, 'de'));
+        if (!lastData.length) { $status.innerHTML = `<b>0</b> ${BUILDING_TYPES[activeType].label}-Wachen.`; $list.innerHTML = `<div style="color:#9399b2;padding:8px;">Keine ${BUILDING_TYPES[activeType].label}-Wachen gefunden.</div>`; return; }
+
+        const filterName = panel.querySelector('#zl-filter-select')?.value || '';
+        const hideBuilding = panel.querySelector('#zl-filter-building')?.checked ?? true;
+        let rows = [...lastData].sort((a, b) => a.name.localeCompare(b.name, 'de'));
+        let hiddenCount = 0;
+        if (filterName) {
+            rows = rows.filter(s => {
+                const st = statusByStation[s.id]?.get(filterName);
+                if (!st) return true; // Status dieser Wache noch nicht geprüft -> sichtbar lassen
+                const has = st === 'built' || (hideBuilding && st === 'building');
+                if (has) hiddenCount++;
+                return !has;
+            });
+        }
+
+        $status.innerHTML = filterName
+            ? `<b>${rows.length}</b> von <b>${lastData.length}</b> ${BUILDING_TYPES[activeType].label}-Wachen ohne „${filterName}"${hiddenCount ? ` (<b>${hiddenCount}</b> ausgeblendet)` : ''}.`
+            : `<b>${lastData.length}</b> ${BUILDING_TYPES[activeType].label}-Wachen. Klick auf eine Wache lädt ihre Erweiterungen.`;
+        if (!rows.length) { $list.innerHTML = `<div style="color:#9399b2;padding:8px;">Alle Wachen haben „${filterName}" bereits (oder im Bau).</div>`; return; }
         let html = '';
         for (const s of rows) {
             html += `<div class="zl-station" data-id="${s.id}" style="padding:6px 4px;border-bottom:1px solid #313244;">
@@ -272,7 +335,7 @@
                     if (!exts.length) { box.innerHTML = '<span style="color:#9399b2;font-size:11px;">Keine baubaren Erweiterungen (alles ausgebaut).</span>'; return; }
                     box.innerHTML = exts.map(e => `
                         <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;">
-                            <span style="font-size:12px;">${e.name}${e.builtInfo ? ` <span style="color:#9399b2;">${e.builtInfo}</span>` : ''}</span>
+                            <span style="font-size:12px;">${e.name}</span>
                             <button class="zl-buildext" data-bid="${id}" data-tid="${e.typeId}" title="Mit Credits bauen"
                                 style="background:#a6e3a1;color:#1e1e2e;border:none;border-radius:4px;font-size:11px;font-weight:600;padding:3px 8px;cursor:pointer;white-space:nowrap;">
                                 ${e.priceTxt || 'bauen'}
@@ -314,19 +377,32 @@
                 <button class="zl-type" data-t="fire" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🚒 Feuerwehr</button>
                 <button class="zl-type" data-t="thw" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🔧 THW</button>
             </div>
+            <div style="display:flex;gap:6px;margin-bottom:4px;align-items:center;">
+                <select id="zl-filter-select" title="Nur Wachen OHNE diese Erweiterung anzeigen" style="flex:1;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:11px;padding:4px;">
+                    <option value="">— kein Update-Filter —</option>
+                </select>
+                <button id="zl-filter-load" title="Update-Status aller Wachen laden (ein Request je Wache)" style="background:none;border:1px solid #45475a;border-radius:4px;color:#cdd6f4;cursor:pointer;font-size:11px;padding:4px 7px;white-space:nowrap;">🔎 Status laden</button>
+            </div>
+            <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9399b2;margin-bottom:6px;">
+                <input type="checkbox" id="zl-filter-building" checked> auch „im Bau" ausblenden
+            </label>
             <div id="zl-status" style="margin-bottom:6px;font-size:12px;">Bereit – „⟳ Prüfen" liest die Wachen.</div>
             <div id="zl-list" style="overflow:auto;flex:1;"></div>
-            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Klick auf eine Wache zeigt ihre Erweiterungen mit Preis. Bauen erfolgt mit CREDITS (Coins gesperrt), ohne Rückfrage. Quelle: /api/buildings + Wachenseite.</div>
+            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Klick auf eine Wache zeigt ihre Erweiterungen mit Preis. Bauen erfolgt mit CREDITS (Coins gesperrt), ohne Rückfrage. Update-Filter: „🔎 Status laden" prüft jede Wache einmal und merkt sich das Ergebnis. Quelle: /api/buildings + Wachenseite.</div>
         `;
         document.body.appendChild(panel);
         panel.querySelector('#zl-close').onclick = () => panel.remove();
         panel.querySelector('#zl-scan').onclick = () => scan(panel);
+        panel.querySelector('#zl-filter-load').onclick = () => loadAllStatuses(panel);
+        panel.querySelector('#zl-filter-select').onchange = () => render(panel);
+        panel.querySelector('#zl-filter-building').onchange = () => render(panel);
         for (const tb of panel.querySelectorAll('.zl-type')) {
             tb.onclick = () => {
                 activeType = tb.getAttribute('data-t');
                 for (const b of panel.querySelectorAll('.zl-type')) { b.style.background = '#45475a'; b.style.color = '#cdd6f4'; }
                 tb.style.background = '#89b4fa'; tb.style.color = '#1e1e2e';
                 lastData = null;
+                panel.querySelector('#zl-filter-select').value = '';
                 scan(panel);
             };
         }
