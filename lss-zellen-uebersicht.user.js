@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Zellen-Übersicht (Polizeiwachen)
 // @namespace    http://tampermonkey.net/
-// @version      1.08
+// @version      1.09
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
-// @description  Zeigt pro Polizeiwache die Zellen: fertig, im Bau und frei (bis Maximum). Aus /api/buildings, ein schneller Abruf. Update-Filter blendet Wachen aus, die eine gewählte Erweiterung schon haben. Modular für weitere Gebäudetypen erweiterbar.
+// @description  Zeigt pro Wache die Erweiterungen (Polizei, Feuerwehr, THW, BePol, SEG, Krankenhaus). Polizei zusätzlich mit Zellen-Zählung. Update-Filter blendet Wachen aus, die eine gewählte Erweiterung schon haben. Aus /api/buildings + Wachenseite.
 // @match        https://www.leitstellenspiel.de/*
 // @grant        none
 // @run-at       document-idle
@@ -21,6 +21,9 @@
         police: { id: 6, label: '🚔 Polizei', icon: '🚔' },
         fire:   { id: 0, label: '🚒 Feuerwehr', icon: '🚒' },
         thw:    { id: 9, label: '🔧 THW', icon: '🔧' },
+        bepol:  { id: 11, label: '👮 BePol', icon: '👮' },
+        seg:    { id: 12, label: '🚑 SEG', icon: '🚑' },
+        kh:     { id: 4, label: '🏥 Krankenhaus', icon: '🏥' },
     };
     let activeType = 'police';
 
@@ -372,10 +375,13 @@
                     <button id="zl-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
                 </div>
             </div>
-            <div style="display:flex;gap:6px;margin-bottom:8px;">
-                <button class="zl-type" data-t="police" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#89b4fa;color:#1e1e2e;">🚔 Polizei</button>
-                <button class="zl-type" data-t="fire" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🚒 Feuerwehr</button>
-                <button class="zl-type" data-t="thw" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🔧 THW</button>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+                <button class="zl-type" data-t="police" style="flex:1 1 30%;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#89b4fa;color:#1e1e2e;">🚔 Polizei</button>
+                <button class="zl-type" data-t="fire" style="flex:1 1 30%;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🚒 Feuerwehr</button>
+                <button class="zl-type" data-t="thw" style="flex:1 1 30%;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🔧 THW</button>
+                <button class="zl-type" data-t="bepol" style="flex:1 1 30%;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">👮 BePol</button>
+                <button class="zl-type" data-t="seg" style="flex:1 1 30%;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🚑 SEG</button>
+                <button class="zl-type" data-t="kh" style="flex:1 1 30%;padding:6px;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;background:#45475a;color:#cdd6f4;">🏥 Krankenhaus</button>
             </div>
             <div style="display:flex;gap:6px;margin-bottom:4px;align-items:center;">
                 <select id="zl-filter-select" title="Nur Wachen OHNE diese Erweiterung anzeigen" style="flex:1;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:11px;padding:4px;">
