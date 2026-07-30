@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.56
+// @version      5.57
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
-// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – jetzt mit Debug-Logging und Log-Export.
+// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher jetzt mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht.
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -507,12 +507,21 @@
         try {
             if (tryWrite()) { mblPersistFailed = false; return true; }
         } catch (e) { /* weiter zum Notfall-Aufräumen */ }
-        // Quota voll? Größten eigenen Posten (persistiertes Log) opfern und erneut versuchen.
-        try { localStorage.removeItem(LOG_KEY); } catch (e) { /* egal */ }
+        // Quota voll? Erst den verzichtbaren Debug-Logpuffer kürzen (nicht komplett löschen) und erneut versuchen.
+        if (shrinkLogBuffer()) { try { localStorage.setItem(LOG_KEY, JSON.stringify(logBuffer)); } catch (e) { /* egal */ } }
         try {
             if (tryWrite()) {
                 mblPersistFailed = false;
-                log('⚠️ Speicher war voll – persistiertes Log geleert, Sperrliste dann erfolgreich gespeichert (Log-Export der aktuellen Sitzung bleibt vollständig)', '#f9e2af');
+                log('⚠️ Speicher war knapp – Log gekürzt, Sperrliste dann erfolgreich gespeichert (Log-Export der aktuellen Sitzung bleibt vollständig)', '#f9e2af');
+                return true;
+            }
+        } catch (e) { /* egal */ }
+        // Immer noch voll -> zusätzlich den kleineren Audit-Puffer kürzen.
+        if (shrinkAuditBuffer()) { try { localStorage.setItem(AUDIT_KEY, JSON.stringify(auditBuffer)); } catch (e) { /* egal */ } }
+        try {
+            if (tryWrite()) {
+                mblPersistFailed = false;
+                log('⚠️ Speicher war knapp – Log/Audit gekürzt, Sperrliste dann erfolgreich gespeichert', '#f9e2af');
                 return true;
             }
         } catch (e) { /* egal */ }
@@ -716,9 +725,16 @@
         const val = on ? '1' : '0';
         const tryWrite = () => { localStorage.setItem(CITYONLY_KEY, val); return localStorage.getItem(CITYONLY_KEY) === val; };
         try { if (tryWrite()) return true; } catch (e) { /* Quota? */ }
-        // Speicher voll -> größte verzichtbare Posten opfern und erneut versuchen.
-        for (const k of [LOG_KEY, AUDIT_KEY]) { try { localStorage.removeItem(k); } catch (e) {} }
-        try { if (tryWrite()) { log('⚠️ Speicher war voll – Log/Audit geleert, Nur-City-Zustand nun gespeichert', '#f9e2af'); return true; } } catch (e) {}
+        // Speicher voll -> erst den verzichtbaren Debug-Logpuffer kürzen (nicht komplett löschen).
+        if (shrinkLogBuffer()) {
+            try { localStorage.setItem(LOG_KEY, JSON.stringify(logBuffer)); } catch (e) { /* egal */ }
+            try { if (tryWrite()) { log('⚠️ Speicher war knapp – Log gekürzt, Nur-City-Zustand nun gespeichert', '#f9e2af'); return true; } } catch (e) {}
+        }
+        // Immer noch voll -> zusätzlich den kleineren Audit-Puffer kürzen.
+        if (shrinkAuditBuffer()) {
+            try { localStorage.setItem(AUDIT_KEY, JSON.stringify(auditBuffer)); } catch (e) { /* egal */ }
+            try { if (tryWrite()) { log('⚠️ Speicher war knapp – Log/Audit gekürzt, Nur-City-Zustand nun gespeichert', '#f9e2af'); return true; } } catch (e) {}
+        }
         log('⚠️ Nur-City-Zustand konnte NICHT gespeichert werden (localStorage verweigert) – nach Reload bitte neu setzen', '#f38ba8');
         return false;
     }
@@ -726,6 +742,29 @@
     if (CONFIG.cityOnly) refreshCityBuildings();
     let fileHandle = null;     // FileSystemFileHandle (nur Chrome/Edge)
     let saveTimer = null;
+
+    // Verified-Write-Muster (CLAUDE.md): Safari lässt setItem bei vollem Quota still fehlschlagen,
+    // ohne Fehler/Throw. Deshalb nach jedem Schreiben zurücklesen und vergleichen – nie annehmen,
+    // dass es geklappt hat. Bei Quota-Druck erst den verzichtbaren Debug-Logpuffer halbieren
+    // (nicht komplett leeren, damit möglichst viel Historie überlebt), erst wenn das nicht reicht
+    // auch den kleineren, aber für Kaufentscheidungen wertvolleren Audit-Puffer kürzen.
+    function shrinkLogBuffer() {
+        if (logBuffer.length < 20) return false;
+        logBuffer = logBuffer.slice(-Math.max(200, Math.floor(logBuffer.length / 2)));
+        return true;
+    }
+    function shrinkAuditBuffer() {
+        if (auditBuffer.length < 20) return false;
+        auditBuffer = auditBuffer.slice(-Math.max(200, Math.floor(auditBuffer.length / 2)));
+        return true;
+    }
+    function verifiedSet(key, value) {
+        try {
+            localStorage.setItem(key, value);
+            if (localStorage.getItem(key) === value) return true;
+        } catch (e) { /* fällt durch zur Notfall-Bereinigung */ }
+        return false;
+    }
 
     function pushLog(line, lvl) {
         // Lokale Zeit statt UTC, damit Log-Zeitstempel zur Spielzeit/Anzeige passen
@@ -738,16 +777,31 @@
             auditBuffer.push(`${local} [${lvl}] ${line}`);
             if (auditBuffer.length > CONFIG.auditMaxLines) auditBuffer.splice(0, auditBuffer.length - CONFIG.auditMaxLines);
             clearTimeout(auditSaveTimer);
-            auditSaveTimer = setTimeout(() => {
-                try { localStorage.setItem(AUDIT_KEY, JSON.stringify(auditBuffer)); } catch (e) { /* voll – egal */ }
-            }, 1500);
+            auditSaveTimer = setTimeout(persistAudit, 1500);
         }
         clearTimeout(saveTimer);
         saveTimer = setTimeout(persistLog, 1500);
     }
 
+    function persistAudit() {
+        if (verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer))) return;
+        // Quota voll: erst den verzichtbaren Debug-Logpuffer opfern (Audit ist die Kaufentscheidungs-Basis)
+        if (shrinkLogBuffer() && verifiedSet(LOG_KEY, JSON.stringify(logBuffer)) && verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer))) return;
+        // Immer noch voll: Audit-Puffer selbst halbieren statt ihn komplett zu verlieren.
+        if (shrinkAuditBuffer()) verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer));
+    }
+
     function persistLog() {
-        try { localStorage.setItem(LOG_KEY, JSON.stringify(logBuffer)); } catch (e) { /* voll – egal */ }
+        if (!verifiedSet(LOG_KEY, JSON.stringify(logBuffer))) {
+            // Quota voll: eigenen Puffer halbieren (meist reicht das) und erneut versuchen.
+            if (shrinkLogBuffer()) {
+                if (!verifiedSet(LOG_KEY, JSON.stringify(logBuffer))) {
+                    // Immer noch voll: zusätzlich den kleineren Audit-Puffer kürzen.
+                    if (shrinkAuditBuffer()) verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer));
+                    verifiedSet(LOG_KEY, JSON.stringify(logBuffer));
+                }
+            }
+        }
         flushToFile();
     }
 
