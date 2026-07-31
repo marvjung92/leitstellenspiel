@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.62
+// @version      5.63
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Erkennt fehlende Pumpenleistung. Neu: 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button (räumt den größten Quota-Fresser weg).
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.62';
+    const SCRIPT_VERSION = '5.63';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -88,13 +88,13 @@
         // wieder freigegeben, wenn die Last auf speedResumeAt oder weniger gesunken ist (tiefe Hysterese).
         autoSpeed: true,
         speedLadder: [                 // Stufen: bis upTo Einsätze -> speed-Parameter (siehe SPEED_LABEL)
-            { upTo: 35, speed: 3 },    // 0-35  -> 3x   (Band weiter verlängert: volles Tempo bis 35 offene Einsätze)
-            { upTo: 50, speed: 2 },    // 36-50 -> 2x
-            { upTo: 62, speed: 1 },    // 51-62 -> 1x
-            { upTo: 69, speed: 7 },    // 63-69 -> 0.5x
-        ],                             // > 69 -> Pause (endet erst wieder bei <= speedResumeAt)
-        speedPauseAbove: 70,           // > so viele Einsätze -> Pause (keine neuen Einsätze)
-        speedResumeAt: 35,             // Pause erst beenden, wenn wieder <= so viele Einsätze offen sind (passt zum 3x-Band)
+            { upTo: 50, speed: 3 },    // 0-50  -> 3x   (Schwellen am 31.07. auf Wunsch angehoben: mehr gleichzeitige Einsätze zulassen)
+            { upTo: 71, speed: 2 },    // 51-71 -> 2x
+            { upTo: 88, speed: 1 },    // 72-88 -> 1x
+            { upTo: 98, speed: 7 },    // 89-98 -> 0.5x
+        ],                             // > 98 -> Pause (endet erst wieder bei <= speedResumeAt)
+        speedPauseAbove: 100,          // > so viele Einsätze -> Pause (keine neuen Einsätze)
+        speedResumeAt: 50,             // Pause erst beenden, wenn wieder <= so viele Einsätze offen sind (passt zum 3x-Band)
         speedMinHoldMs: 90000,         // Mindesthaltezeit zwischen zwei Stufenwechseln (Flatter-Schutz an Stufengrenzen)
         speedNormal: 1,                // /missionSpeed?speed=1  = 1x (Fallback, z.B. beim Aufheben der Pause im manuellen Modus)
         speedPause: 6,                 // /missionSpeed?speed=6  = Pause (es werden keine Einsätze generiert)
