@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.58
+// @version      5.59
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
-// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel.
+// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Neu: 🔍 Speicher-Diagnose-Button.
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -1034,6 +1034,7 @@
             <button id="ad-file" title="Logdatei wählen, in die fortlaufend geschrieben wird (nur Chrome/Edge)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">📁 Datei</button>
             <button id="ad-clear" title="Logpuffer leeren" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🗑</button>
             <button id="ad-reset" title="Gedächtnis zurücksetzen (Über-Alarmierungs-Bremse, Cooldowns, gesendete Fahrzeuge)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🧠 Reset</button>
+            <button id="ad-storage" title="Speicher-Diagnose: alle localStorage-Schlüssel dieser Domain mit Größe (findet, was die Quota auffrisst)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🔍 Speicher</button>
         </div>
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;color:#cdd6f4;">
             <span title="Steuert die Spielgeschwindigkeit. Automatisch = Skript drosselt bei vielen Einsätzen; Manuell = Spiel-Einstellung bleibt unangetastet.">⏱ Tempo:</span>
@@ -1246,6 +1247,20 @@
         try { localStorage.removeItem(VGUARD_KEY); } catch (e) {}
         try { localStorage.removeItem(VFAIL_KEY); } catch (e) {}
         log('🧠 Gedächtnis zurückgesetzt – alle Einsätze werden neu bewertet', '#89b4fa');
+    });
+    panel.querySelector('#ad-storage').addEventListener('click', () => {
+        let total = 0;
+        const rows = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            const v = localStorage.getItem(k) || '';
+            rows.push({ k, bytes: v.length });
+            total += v.length;
+        }
+        rows.sort((a, b) => b.bytes - a.bytes);
+        log(`🔍 Speicher-Diagnose: ${rows.length} Schlüssel, ~${(total / 1024).toFixed(0)} KB gesamt auf dieser Domain (alle LSS-Skripte zusammen)`, '#89b4fa');
+        for (const r of rows.slice(0, 15)) log(`   ${r.k}: ~${(r.bytes / 1024).toFixed(1)} KB`, '#9399b2');
+        if (rows.length > 15) log(`   … und ${rows.length - 15} weitere Schlüssel`, '#9399b2');
     });
 
     // ---------- Typliste der LSSM-API (optional) ----------
