@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.62
+// @version      1.63
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
-// @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler.
+// @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. Neu: 🔓 Ausnahme-Leitstelle – deren LFs bedienen weiter Verbandseinsätze, auch wenn die 35er-Reserve erreicht ist.
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -395,9 +395,79 @@
         return false;
     }
 
+    // Ausnahme-Leitstelle (v1.63): deren zugeordnete Gebäude dürfen LFs für Verbandseinsätze liefern,
+    // auch wenn die 35er-Reserve (MIN_FREE_LF) schon erreicht ist – für Wachen mit viel Leerstand,
+    // die die allgemeine Reserve nicht braucht (z.B. "Leitstelle Essen", Befund 31.07.: viele LF dort
+    // standen komplett ungenutzt herum). Gleicher Auflösungs-Mechanismus wie Innenstadt-Leitstelle,
+    // nur als eigener, unabhängiger Schlüssel.
+    const EXEMPT_KEY = 'tv_exempt_dispatch';        // { leitstellen: [ids], names: [namensteile] }
+    const EXEMPTBLD_KEY = 'tv_exempt_buildings';    // Cache: { ts, ids: [gebäude-ids] }
+    function exemptConfig() {
+        try {
+            const c = JSON.parse(localStorage.getItem(EXEMPT_KEY) || '{}');
+            return { leitstellen: (c.leitstellen || []).map(String), names: (c.names || []).map(n => n.toLowerCase()) };
+        } catch (e) { return { leitstellen: [], names: [] }; }
+    }
+    function saveExemptConfig(leitstellen, names) {
+        const payload = JSON.stringify({ leitstellen: leitstellen.map(String), names });
+        const tryWrite = () => { localStorage.setItem(EXEMPT_KEY, payload); return localStorage.getItem(EXEMPT_KEY) === payload; };
+        try { if (tryWrite()) return true; } catch (e) { /* Quota? -> aufräumen */ }
+        for (const k of ['tv_send_log', 'tv_type_credits', 'tv_city_buildings', 'tv_exempt_buildings']) { try { localStorage.removeItem(k); } catch (e) {} }
+        try {
+            if (tryWrite()) { console.warn('[Top-Verband] Speicher war voll – Cache/Protokoll geleert, Ausnahme-Leitstellen-ID nun gespeichert.'); return true; }
+        } catch (e) { /* immer noch nicht */ }
+        console.error('[Top-Verband] Ausnahme-Leitstellen-ID konnte NICHT gespeichert werden (localStorage verweigert – privater Modus oder Quota voll).');
+        return false;
+    }
+    let exemptBuildingIds = new Set();
+    (function loadCachedExemptBuildings() {
+        try {
+            const c = JSON.parse(localStorage.getItem(EXEMPTBLD_KEY) || 'null');
+            if (c && c.ids && c.ids.length && Date.now() - c.ts < 24 * 3600000) exemptBuildingIds = new Set(c.ids.map(String));
+        } catch (e) { /* egal */ }
+    })();
+    async function refreshExemptBuildings(force = false) {
+        const cfg = exemptConfig();
+        if (!cfg.leitstellen.length) { exemptBuildingIds = new Set(); return; }
+        if (!force && exemptBuildingIds.size) return; // Cache reicht
+        try {
+            const res = await fetch('/api/buildings', { credentials: 'same-origin' });
+            if (!res.ok) return;
+            const all = await res.json();
+            const set = new Set();
+            const leit = new Set(cfg.leitstellen);
+            const LEIT_FIELDS = ['leitstelle_building_id', 'leitstelle_id', 'dispatch_center_building_id', 'dispatch_center_id', 'building_leitstelle_id'];
+            for (const b of all) {
+                let lid = null;
+                for (const f of LEIT_FIELDS) if (b[f] != null) { lid = String(b[f]); break; }
+                if (leit.has(String(b.id)) || (lid && leit.has(lid))) set.add(String(b.id));
+            }
+            exemptBuildingIds = set;
+            try { localStorage.setItem(EXEMPTBLD_KEY, JSON.stringify({ ts: Date.now(), ids: [...set] })); } catch (e) { /* egal */ }
+            console.log(`[Top-Verband] Ausnahme-Leitstelle: ${set.size} zugeordnete Gebäude erkannt (Leitstelle ${cfg.leitstellen.join(', ')}).`);
+        } catch (e) { console.warn('[Top-Verband] /api/buildings nicht ladbar (Ausnahme-Leitstelle):', e); }
+    }
+    // Gehört diese Fahrzeugzeile zu einem Gebäude der Ausnahme-Leitstelle?
+    function isExemptVehicle(cb, cfg) {
+        const tr = cb.closest('tr');
+        const bid = cb.getAttribute('building_id') || (tr && tr.getAttribute('building_id'));
+        if (bid) {
+            for (const part of String(bid).split(/[^0-9]+/)) {
+                if (!part) continue;
+                if (exemptBuildingIds.has(part)) return true;
+                if (cfg.leitstellen.includes(part)) return true;
+            }
+        }
+        const name = (tr && tr.getAttribute('building') || '').toLowerCase();
+        if (name && cfg.names.some(n => n && name.includes(n))) return true;
+        return false;
+    }
+
     // Einsatzseite laden, CSRF-Token holen und ein einzelnes FREIES LF finden (erste anklickbare Checkbox
     // mit passendem vehicle_type_id). Gibt { token, lfId } zurück; lfId = null, wenn kein LF frei ist.
-    async function findFreeLf(missionId) {
+    // exemptOnly = true: nur LFs der Ausnahme-Leitstelle akzeptieren (wird genutzt, wenn die 35er-
+    // Reserve schon erreicht ist – diese Wachen dürfen trotzdem weiter liefern, siehe doSend()).
+    async function findFreeLf(missionId, exemptOnly = false) {
         const res = await fetch(`/missions/${missionId}`, { credentials: 'same-origin' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
@@ -407,11 +477,13 @@
         let lfId = null, lfBuilding = null, citySkipped = 0;
         const blocked = manualBlacklist();
         const cfg = cityConfig();
+        const exCfg = exemptOnly ? exemptConfig() : null;
         for (const cb of doc.querySelectorAll('.vehicle_checkbox:not([disabled])')) {
             const t = Number(cb.getAttribute('vehicle_type_id'));
             if (!LF_TYPE_IDS.includes(t)) continue;
             if (blocked.has(String(cb.value))) continue;   // manuelle Fahrzeug-Sperrliste
             if (isCityVehicle(cb, cfg)) { citySkipped++; continue; } // Innenstadt bleibt zu Hause
+            if (exemptOnly && !isExemptVehicle(cb, exCfg)) continue; // Reserve knapp -> nur Ausnahme-Leitstelle
             lfId = cb.value;
             const tr = cb.closest('tr');
             lfBuilding = (tr && tr.getAttribute('building')) || null;
@@ -426,7 +498,9 @@
         // Sicherstellen, dass die Innenstadt-Gebäude aufgelöst sind, BEVOR das erste LF gesucht wird.
         // (Fix: in v1.56 konnte die Auflösung ausbleiben -> Innenstadt-LFs rutschten durch.)
         if (cityConfig().leitstellen.length && !cityBuildingIds.size) await refreshCityBuildings(true);
-        let sent = 0, noLf = 0, err = 0, aborted = false, alreadyBound = 0, reserveHeld = 0;
+        const hasExempt = exemptConfig().leitstellen.length > 0;
+        if (hasExempt && !exemptBuildingIds.size) await refreshExemptBuildings(true);
+        let sent = 0, exemptSent = 0, noLf = 0, err = 0, aborted = false, alreadyBound = 0, reserveHeld = 0;
         lastThresholdInfo = ''; // pro Durchlauf frisch (harter Stopp nutzt sonst veralteten Text)
         if (onProgress) onProgress('Prüfe LF-Reserve und laufende Einsätze…');
         const state = await fetchLfState(); // null = API nicht verfügbar
@@ -441,24 +515,36 @@
             }
             // Harter Stopp: unter MIN_FREE_LF freien LFs wird nichts mehr in den Verband geschickt.
             // (Kein markSent – die Einsätze bleiben Ziele und werden bedient, sobald wieder Luft ist.)
-            if (freeLeft != null && freeLeft <= MIN_FREE_LF) {
+            // Ausnahme (v1.63): ist eine Ausnahme-Leitstelle konfiguriert (z.B. Wachen mit viel
+            // Leerstand), darf DEREN LF trotzdem raus – der Stopp gilt dann nur noch für alle anderen.
+            const reserveTight = freeLeft != null && freeLeft <= MIN_FREE_LF;
+            if (reserveTight && !hasExempt) {
                 reserveHeld = targets.length - i; // alle ab hier unbearbeiteten Ziele bleiben für später
                 break;
             }
             // Dynamische Schwelle: steigt, je weniger LFs frei sind. Chat-geteilte Einsätze sind
             // ausgenommen (stehen sortiert vorn). Da die übrigen Ziele nach Verdienst absteigend
             // sortiert sind und die Schwelle beim Senden nur steigen kann, dürfen wir beim ersten
-            // Nicht-Chat-Ziel unterhalb der aktuellen Schwelle abbrechen.
+            // Nicht-Chat-Ziel unterhalb der aktuellen Schwelle abbrechen. Bei knapper Reserve mit
+            // Ausnahme-Leitstelle wird nicht abgebrochen, sondern nur die normale Suche übersprungen.
             const thr = effectiveThreshold(freeLeft);
-            if (!m.fromChat && m.credits <= thr) {
+            const belowThreshold = !m.fromChat && m.credits <= thr;
+            if (belowThreshold && !reserveTight) {
                 reserveHeld = targets.length - i;
                 lastThresholdInfo = freeLeft != null ? `Schwelle ${thr.toLocaleString('de-DE')} bei ${freeLeft} freien LF` : '';
                 break;
             }
             if (onProgress) onProgress(`Sende… (${i + 1}/${targets.length}) – #${m.id}`);
             try {
-                const { token, lfId, lfBuilding, citySkipped } = await findFreeLf(m.id);
-                if (!lfId) { noLf++; recordCitySkip({ id: m.id, name: m.name, building: null, citySkipped, noLf: true, fromChat: !!m.fromChat }); continue; }
+                // Reserve knapp -> nur noch nach einem LF der Ausnahme-Leitstelle suchen (bei
+                // belowThreshold bleibt es sonst ohnehin bei "kein LF frei", also kein Sonderfall nötig).
+                const { token, lfId, lfBuilding, citySkipped } = await findFreeLf(m.id, reserveTight);
+                if (!lfId) {
+                    noLf++;
+                    if (reserveTight) reserveHeld++; // kein Ausnahme-LF für dieses Ziel -> für später vormerken
+                    recordCitySkip({ id: m.id, name: m.name, building: null, citySkipped, noLf: true, fromChat: !!m.fromChat });
+                    continue;
+                }
                 const body = new URLSearchParams();
                 body.append('authenticity_token', token);
                 body.append('commit', 'Alarmieren');
@@ -473,6 +559,7 @@
                 if (!post.ok && post.status !== 302) { err++; continue; }
                 markSent(m.id);
                 sent++;
+                if (reserveTight) exemptSent++;
                 if (freeLeft != null) freeLeft--;
                 recordCitySkip({ id: m.id, name: m.name, building: lfBuilding, citySkipped, noLf: false, fromChat: !!m.fromChat });
             } catch (e) {
@@ -480,11 +567,12 @@
             }
             await new Promise(r => setTimeout(r, SEND_DELAY));
         }
-        return { sent, noLf, err, aborted, alreadyBound, reserveHeld };
+        return { sent, exemptSent, noLf, err, aborted, alreadyBound, reserveHeld };
     }
 
     function resultText(r) {
         return `${r.sent} LF gesendet`
+            + (r.exemptSent ? ` (davon ${r.exemptSent} von der Ausnahme-Leitstelle trotz knapper Reserve)` : '')
             + (r.alreadyBound ? `, ${r.alreadyBound}× übersprungen (eigenes LF schon unterwegs)` : '')
             + (r.reserveHeld ? `, ${r.reserveHeld} zurückgestellt (${lastThresholdInfo || `Reserve: min. ${MIN_FREE_LF} LF frei halten`})` : '')
             + (r.noLf ? `, ${r.noLf}× kein LF frei` : '')
@@ -629,6 +717,7 @@
                 <button id="tv-sendlf" title="Jetzt einmalig an alle offenen Einsätze über der Schwelle je 1 LF senden" style="flex:1;padding:7px 10px;background:#f38ba8;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Jetzt senden &gt; ${CREDIT_THRESHOLD.toLocaleString('de-DE')} 💰</button>
                 <button id="tv-auto" title="Automatik: alle 3 Minuten aktualisieren und ohne Rückfrage je 1 LF senden" style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;">🤖 Auto</button>
                 <button id="tv-city" title="Innenstadt-Leitstelle festlegen (deren LFs bleiben zu Hause). Shift+Klick = Sende-Protokoll herunterladen (zeigt, von welcher Wache jedes LF kam)." style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;background:#45475a;color:#cdd6f4;">🏙</button>
+                <button id="tv-exempt" title="Ausnahme-Leitstelle festlegen: deren LFs dürfen weiter Verbandseinsätze bedienen, auch wenn die 35er-Reserve schon erreicht ist (für Wachen mit viel Leerstand, z.B. Leitstelle Essen)." style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;background:#45475a;color:#cdd6f4;">🔓</button>
             </div>
             <div id="tv-result" style="overflow:auto;flex:1;"></div>
             <div style="color:#9399b2;font-size:10px;margin-top:8px;">Wert = geschätzter Verdienst aus dem LSSM-Addon. Nur offene (rot/gelb) freigegebene bzw. Verband-Einsätze.</div>
@@ -666,6 +755,36 @@
             if ($s) $s.innerHTML = leitstellen.length
                 ? `🏙 Innenstadt-Leitstelle gespeichert: ${leitstellen.length} Leitstelle(n), ${cityBuildingIds.size} zugeordnete Gebäude – deren LFs bleiben zu Hause.`
                 : '🏙 Innenstadt-Sperre deaktiviert.';
+        };
+        panel.querySelector('#tv-exempt').onclick = async () => {
+            const c = exemptConfig();
+            const idIn = window.prompt(
+                'AUSNAHME-LEITSTELLE(N) – alle zugeordneten Wachen dürfen weiter Verbandseinsätze mit LF\n' +
+                'bedienen, auch wenn die 35er-Reserve (MIN_FREE_LF) schon erreicht ist. Gedacht für Wachen mit\n' +
+                'viel Leerstand (z.B. "Leitstelle Essen"). Bei knapper Reserve gilt für diese LFs auch KEINE\n' +
+                'Verdienst-Mindestschwelle mehr.\n\n' +
+                'Leitstellen-Gebäude-ID(s) eintragen (aus der URL /buildings/<ID> der Leitstelle),\n' +
+                'mehrere mit Komma. Leeren = Ausnahme aus.', c.leitstellen.join(', '));
+            if (idIn === null) return;
+            const nameIn = window.prompt(
+                'Optionaler Namens-Fallback (falls die API mal nicht greift): Namensteile der Ausnahme-\n' +
+                'Wachen, case-egal, mit Komma. Meist NICHT nötig. Leeren = kein Namens-Fallback.', c.names.join(', '));
+            if (nameIn === null) return;
+            const leitstellen = (idIn.match(/\d+/g) || []);
+            const names = nameIn.split(',').map(x => x.trim()).filter(Boolean);
+            const saved = saveExemptConfig(leitstellen, names);
+            const p = document.getElementById('tv-panel');
+            const $s = p && p.querySelector('#tv-status');
+            if (!saved) {
+                if ($s) $s.innerHTML = '<span style="color:#f38ba8;">⚠️ Speichern fehlgeschlagen (localStorage). Ausnahme-Leitstellen-ID konnte nicht abgelegt werden – Speicher voll oder privater Modus.</span>';
+                return;
+            }
+            if ($s) $s.innerHTML = '🔓 Ermittle zugeordnete Wachen…';
+            exemptBuildingIds = new Set();
+            await refreshExemptBuildings(true);
+            if ($s) $s.innerHTML = leitstellen.length
+                ? `🔓 Ausnahme-Leitstelle gespeichert: ${leitstellen.length} Leitstelle(n), ${exemptBuildingIds.size} zugeordnete Gebäude – deren LFs dürfen auch bei knapper Reserve raus.`
+                : '🔓 Ausnahme-Regel deaktiviert.';
         };
         const $auto = panel.querySelector('#tv-auto');
         const paintAuto = () => {
