@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.61
+// @version      5.62
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Erkennt fehlende Pumpenleistung. Neu: 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button (räumt den größten Quota-Fresser weg).
@@ -13,6 +13,10 @@
 
 (function () {
     'use strict';
+
+    // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
+    // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
+    const SCRIPT_VERSION = '5.62';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -1015,7 +1019,7 @@
     `;
     panel.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:6px;">
-            <b style="white-space:nowrap;">🚨 Auto-Dispatch v5.56</b>
+            <b style="white-space:nowrap;">🚨 Auto-Dispatch v${SCRIPT_VERSION}</b>
             <span style="display:flex;gap:4px;">
                 <button id="ad-toggle" style="cursor:pointer;border:none;border-radius:4px;padding:2px 10px;background:#a6e3a1;color:#1e1e2e;font-weight:bold;">Start</button>
                 <button id="ad-minimize" title="Panel minimieren/maximieren" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:2px 8px;background:#313244;color:#cdd6f4;font-weight:bold;">–</button>
@@ -3067,5 +3071,5 @@
         timer = setTimeout(scanLoop, jitter(CONFIG.scanInterval));
     }
 
-    log('v5.56 geladen – Start drücken.');
+    log(`v${SCRIPT_VERSION} geladen – Start drücken.`);
 })();
