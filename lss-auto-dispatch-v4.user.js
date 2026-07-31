@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.60
+// @version      5.61
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
-// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Neu: 🔍 Speicher-Diagnose-Button, erkennt fehlende Pumpenleistung (Wassereinbruch/Pumpe-Einsätze).
+// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Erkennt fehlende Pumpenleistung. Neu: 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button (räumt den größten Quota-Fresser weg).
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -1035,6 +1035,7 @@
             <button id="ad-clear" title="Logpuffer leeren" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🗑</button>
             <button id="ad-reset" title="Gedächtnis zurücksetzen (Über-Alarmierungs-Bremse, Cooldowns, gesendete Fahrzeuge)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🧠 Reset</button>
             <button id="ad-storage" title="Speicher-Diagnose: alle localStorage-Schlüssel dieser Domain mit Größe (findet, was die Quota auffrisst)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🔍 Speicher</button>
+            <button id="ad-clear-lssmv4" title="lssmv4_missionSpecsStorage leeren (Cache des Drittanbieter-Tools LSS-Manager v4, meist der größte Quota-Fresser – wird von dem Tool bei Bedarf neu aufgebaut)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🧹 LSSM-Cache</button>
         </div>
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;color:#cdd6f4;">
             <span title="Steuert die Spielgeschwindigkeit. Automatisch = Skript drosselt bei vielen Einsätzen; Manuell = Spiel-Einstellung bleibt unangetastet.">⏱ Tempo:</span>
@@ -1261,6 +1262,22 @@
         log(`🔍 Speicher-Diagnose: ${rows.length} Schlüssel, ~${(total / 1024).toFixed(0)} KB gesamt auf dieser Domain (alle LSS-Skripte zusammen)`, '#89b4fa');
         for (const r of rows.slice(0, 15)) log(`   ${r.k}: ~${(r.bytes / 1024).toFixed(1)} KB`, '#9399b2');
         if (rows.length > 15) log(`   … und ${rows.length - 15} weitere Schlüssel`, '#9399b2');
+    });
+    // Cache eines FREMDEN Tools (LSS-Manager v4, v4.lss-manager.de) – laut Speicher-Diagnose meist
+    // der mit Abstand größte Quota-Fresser (~3-4 MB von ~5 MB Safari-Limit). Wird von diesem Tool
+    // bei Bedarf automatisch neu aufgebaut, deshalb unbedenklich löschbar – aber explizit nur auf
+    // Klick + Bestätigung, da es nicht unser eigener Speicher ist.
+    const LSSMV4_SPEC_KEY = 'lssmv4_missionSpecsStorage';
+    panel.querySelector('#ad-clear-lssmv4').addEventListener('click', () => {
+        let sizeKb = 0;
+        try { sizeKb = (localStorage.getItem(LSSMV4_SPEC_KEY) || '').length / 1024; } catch (e) {}
+        if (!confirm(`„${LSSMV4_SPEC_KEY}" leeren (~${sizeKb.toFixed(0)} KB)?\n\nDas ist ein Cache des Drittanbieter-Tools LSS-Manager v4 (v4.lss-manager.de), NICHT von Auto-Dispatch. Er wird bei Bedarf automatisch neu aufgebaut. Meist der mit Abstand größte Speicherposten und Hauptursache für volle Quota.`)) return;
+        try {
+            localStorage.removeItem(LSSMV4_SPEC_KEY);
+            log(`🧹 „${LSSMV4_SPEC_KEY}" geleert (~${sizeKb.toFixed(0)} KB freigegeben) – LSS-Manager v4 baut den Cache bei Bedarf neu auf`, '#a6e3a1');
+        } catch (e) {
+            log(`⚠️ Konnte „${LSSMV4_SPEC_KEY}" nicht leeren: ${e.message}`, '#f38ba8');
+        }
     });
 
     // ---------- Typliste der LSSM-API (optional) ----------
