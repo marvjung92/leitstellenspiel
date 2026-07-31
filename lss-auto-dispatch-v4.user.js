@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.59
+// @version      5.60
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
-// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Neu: 🔍 Speicher-Diagnose-Button.
+// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Neu: 🔍 Speicher-Diagnose-Button, erkennt fehlende Pumpenleistung (Wassereinbruch/Pumpe-Einsätze).
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -1689,6 +1689,23 @@
                     caption: 'Sonderlöschmittel', // literunabhängig für stabilen memKey
                     liters,
                     typeIds: resolveTypeIds('Sonderlöschmittel'),
+                    isWater: true // wie Wasser: Mengen-Anforderung, nicht über vor-Ort doppelzählen
+                });
+            }
+
+            // Fehlende Pumpenleistung erkennen, echtes Format "Uns fehlt: 4600 l/min Pumpenleistung"
+            // (Beleg: DOM von #4354288656 – Wassereinbruch Großbaustelle). Bisher komplett ungeprüft,
+            // deshalb blieb der Einsatz für immer offen, obwohl genug LF vorhanden waren.
+            // LF/HLF liefern laut Fahrzeug-DOM (water_damage_pump_value) je 1.000–2.000 l/min.
+            const pm = text.match(/Uns fehlt:\s*([\d.]+)\s*l\s*\/\s*min\s*Pumpenleistung/i);
+            if (pm) {
+                const missingRate = parseInt(pm[1].replace(/\./g, ''), 10);
+                const count = Math.max(1, Math.ceil(missingRate / 2000));
+                reqs.push({
+                    count,
+                    caption: 'Pumpenleistung', // literunabhängig für stabilen memKey
+                    liters: missingRate,
+                    typeIds: resolveTypeIds('Feuerlöschpumpe'),
                     isWater: true // wie Wasser: Mengen-Anforderung, nicht über vor-Ort doppelzählen
                 });
             }
