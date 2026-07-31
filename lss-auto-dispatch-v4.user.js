@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.57
+// @version      5.58
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
-// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher jetzt mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht.
+// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel.
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -783,21 +783,39 @@
         saveTimer = setTimeout(persistLog, 1500);
     }
 
+    // Zählt, wie oft Log/Audit wegen Speicherdrucks gekürzt werden mussten – sichtbar im Panel,
+    // damit man nicht raten muss, ob/wie oft die Safari-Quota gerade zuschlägt.
+    let shrinkStats = { log: 0, audit: 0 };
+
     function persistAudit() {
         if (verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer))) return;
         // Quota voll: erst den verzichtbaren Debug-Logpuffer opfern (Audit ist die Kaufentscheidungs-Basis)
-        if (shrinkLogBuffer() && verifiedSet(LOG_KEY, JSON.stringify(logBuffer)) && verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer))) return;
+        if (shrinkLogBuffer()) {
+            shrinkStats.log++;
+            log(`⚠️ Speicher knapp – Debug-Log gekürzt auf ${logBuffer.length} Zeilen, um Audit-Historie zu retten (bisher ${shrinkStats.log}× gekürzt)`, '#f9e2af');
+            if (verifiedSet(LOG_KEY, JSON.stringify(logBuffer)) && verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer))) return;
+        }
         // Immer noch voll: Audit-Puffer selbst halbieren statt ihn komplett zu verlieren.
-        if (shrinkAuditBuffer()) verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer));
+        if (shrinkAuditBuffer()) {
+            shrinkStats.audit++;
+            log(`⚠️ Speicher weiterhin knapp – Audit-Historie gekürzt auf ${auditBuffer.length} Wellen (bisher ${shrinkStats.audit}× gekürzt)`, '#f38ba8');
+            verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer));
+        }
     }
 
     function persistLog() {
         if (!verifiedSet(LOG_KEY, JSON.stringify(logBuffer))) {
             // Quota voll: eigenen Puffer halbieren (meist reicht das) und erneut versuchen.
             if (shrinkLogBuffer()) {
+                shrinkStats.log++;
+                log(`⚠️ Speicher knapp – Debug-Log gekürzt auf ${logBuffer.length} Zeilen (Audit-Historie bleibt unberührt, bisher ${shrinkStats.log}× gekürzt)`, '#f9e2af');
                 if (!verifiedSet(LOG_KEY, JSON.stringify(logBuffer))) {
                     // Immer noch voll: zusätzlich den kleineren Audit-Puffer kürzen.
-                    if (shrinkAuditBuffer()) verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer));
+                    if (shrinkAuditBuffer()) {
+                        shrinkStats.audit++;
+                        log(`⚠️ Speicher weiterhin knapp – zusätzlich Audit-Historie gekürzt auf ${auditBuffer.length} Wellen (bisher ${shrinkStats.audit}× gekürzt)`, '#f38ba8');
+                        verifiedSet(AUDIT_KEY, JSON.stringify(auditBuffer));
+                    }
                     verifiedSet(LOG_KEY, JSON.stringify(logBuffer));
                 }
             }
