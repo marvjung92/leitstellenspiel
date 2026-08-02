@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.69
+// @version      5.70
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Live-Fortschritt im Status. Neu: Anforderungen (Fahrzeuge/Personal/Wasser/Pumpenleistung/Gefangenentransport) primär aus dem strukturierten Karten-Feed (mission_markers_own) statt fragilem HTML-Regex, mit DOM-Fallback.
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.69';
+    const SCRIPT_VERSION = '5.70';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -1991,7 +1991,11 @@
             const id = el.getAttribute('mission_id');
             if (!id || el.style.display === 'none') continue;
             // nur eigene Einsätze, an denen wir beteiligt sind (sonst zählen wir fremde mit)
-            const participating = el.querySelector(`#mission_participant_${id}`)?.classList.contains('hidden') === false;
+            // #mission_participant_<id> ist nur ein Kategorie-Icon, kein Beteiligungs-Status – siehe collectMissions().
+            const marker = ownMissionMarkers.get(String(id));
+            const participating = marker
+                ? Number(marker.vehicle_state) > 0
+                : el.querySelector(`#mission_participant_${id}`)?.classList.contains('hidden') === false;
             if (participating) nowActive.add(id);
         }
         // Dauer-Tracking: neue Einsätze mit Startzeit + Name registrieren
