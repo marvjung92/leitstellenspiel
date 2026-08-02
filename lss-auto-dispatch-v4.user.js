@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.70
+// @version      5.71
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Live-Fortschritt im Status. Neu: Anforderungen (Fahrzeuge/Personal/Wasser/Pumpenleistung/Gefangenentransport) primär aus dem strukturierten Karten-Feed (mission_markers_own) statt fragilem HTML-Regex, mit DOM-Fallback.
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.70';
+    const SCRIPT_VERSION = '5.71';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -1673,7 +1673,10 @@
             const text = await res.text();
             const m = text.match(/const mList\s*=\s*(\[[\s\S]*?\]);/);
             if (!m) { dbg('Karten-Feed: "const mList = [...]" nicht gefunden – Format geändert? DOM-Fallback bleibt aktiv.'); return; }
-            const list = JSON.parse(m[1]);
+            // Der Feed liefert ein JS-Array-Literal, keine reine JSON – teils mit trailing comma
+            // vor der schließenden Klammer (z.B. "...},]"), was JSON.parse() zum Scheitern bringt.
+            const jsonText = m[1].replace(/,\s*([}\]])/g, '$1');
+            const list = JSON.parse(jsonText);
             const map = new Map();
             for (const entry of list) if (entry && entry.id != null) map.set(String(entry.id), entry);
             ownMissionMarkers = map;
