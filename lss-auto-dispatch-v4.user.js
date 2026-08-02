@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.66
+// @version      5.67
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
-// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Erkennt fehlende Pumpenleistung. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Neu: Live-Fortschritt im Status ("Sprechwünsche bearbeiten… x/y", "Einsätze abarbeiten… x/y").
+// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Live-Fortschritt im Status. Neu: Anforderungen (Fahrzeuge/Personal/Wasser/Pumpenleistung/Gefangenentransport) primär aus dem strukturierten Karten-Feed (mission_markers_own) statt fragilem HTML-Regex, mit DOM-Fallback.
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.66';
+    const SCRIPT_VERSION = '5.67';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -1646,8 +1646,93 @@
         return [...out];
     }
 
-    function parseRequirements(entry, id) {
+    // ================= Eigene Einsätze via Karten-Feed (JSON) =================
+    // /map/mission_markers_own.js.erb liefert ALLE eigenen Einsätze mit strukturiertem
+    // missing_text ({"vehicles":"...","personnel":"...","other":"..."} bzw. {"long_text":"..."})
+    // statt dem bisherigen Regex-auf-HTML. Verifiziert per Beispiel-Feed (01.08.):
+    //   vehicles: "2&nbsp;Gerätekraftwagen&nbsp;(GKW), 1&nbsp;THW-Einsatzleitung&nbsp;(MTW-TZ)"
+    //   personnel: "32x Betreuungshelfer, 2x Verpflegungshelfer"
+    //   other: "23000&nbsp;l/min&nbsp;Pumpenleistung" (KEIN "Uns fehlt:"-Präfix wie im DOM!)
+    //   long_text: "Gefangene sollen abtransportiert werden."
+    // WICHTIG: Patienten-Anforderungen (RTW/NEF/LNA/OrgL aus "Wir benötigen: ...") stehen NICHT
+    // in diesem Feed (geprüft: fehlt komplett, obwohl z.B. "Massenanfall an Erkrankten" 201
+    // Patienten hatte) – die bleiben deshalb weiterhin DOM-basiert, siehe unten.
+    // Wird einmal pro Scan aktualisiert (refreshOwnMissionMarkers, aus scanLoop) und hier nur
+    // gelesen. Bei Fehlern/fehlendem Eintrag liefert parseMarkerRequirements `null` zurück ->
+    // parseRequirements() fällt dann auf die bisherige DOM-Auswertung zurück (kein Hard-Dependency).
+    let ownMissionMarkers = new Map(); // Einsatz-ID (String) -> Marker-Objekt aus mList
+
+    async function refreshOwnMissionMarkers() {
+        try {
+            const res = await fetch('/map/mission_markers_own.js.erb', { credentials: 'same-origin', cache: 'no-store' });
+            if (!res.ok) return;
+            const text = await res.text();
+            const m = text.match(/const mList\s*=\s*(\[[\s\S]*?\]);/);
+            if (!m) { dbg('Karten-Feed: "const mList = [...]" nicht gefunden – Format geändert? DOM-Fallback bleibt aktiv.'); return; }
+            const list = JSON.parse(m[1]);
+            const map = new Map();
+            for (const entry of list) if (entry && entry.id != null) map.set(String(entry.id), entry);
+            ownMissionMarkers = map;
+        } catch (e) { dbg(`Karten-Feed nicht ladbar (${e.message}) – DOM-Fallback bleibt aktiv`); }
+    }
+
+    // marker.missing_text (roher String, evtl. null) in reqs umwandeln.
+    // Rückgabe: Array (auch leer = "nichts fehlt", authoritativ) oder null = Format kaputt/
+    // unbekannt -> Aufrufer soll auf DOM-Auswertung zurückfallen.
+    function parseMarkerRequirements(marker) {
+        if (marker.missing_text == null) return [];
+        let obj;
+        try { obj = JSON.parse(marker.missing_text); } catch (e) { return null; }
         const reqs = [];
+        const clean = (s) => (s || '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+
+        if (obj.vehicles) {
+            for (const item of clean(obj.vehicles).split(',')) {
+                const im = item.trim().match(/^(\d+)\s+(.+)$/);
+                if (im) reqs.push({ count: +im[1], caption: im[2].trim(), typeIds: resolveTypeIds(im[2]), fromMissing: true });
+            }
+        }
+        if (obj.personnel) {
+            // Beide Formate: "32x Betreuungshelfer" und "1 Einsatzleiter 2"
+            for (const m of clean(obj.personnel).matchAll(/(\d+)\s*x?\s+([^,]+)/g)) {
+                const caption = m[2].trim();
+                reqs.push({ count: parseInt(m[1], 10), caption, typeIds: resolveTypeIds(caption), fromPersonnel: true });
+            }
+        }
+        if (obj.other) {
+            // Kein "Uns fehlt:"-Präfix hier (Unterschied zum DOM-Text) – direkt an der Zahl anfangen.
+            const text = clean(obj.other);
+            const wm = text.match(/^([\d.]+)\s*(?:l\.\s*)?Wasser/i);
+            if (wm) {
+                const liters = parseInt(wm[1].replace(/\./g, ''), 10);
+                reqs.push({ count: Math.ceil(liters / 4000), caption: 'Wasser', liters, typeIds: resolveTypeIds('Wasserführendes Fahrzeug'), isWater: true });
+            }
+            const fm = text.match(/^([\d.]+)\s*(?:l\.\s*)?(?:Sonderlöschmittel|Schaum)/i);
+            if (fm) {
+                const liters = parseInt(fm[1].replace(/\./g, ''), 10);
+                reqs.push({ count: Math.max(1, Math.ceil(liters / 10000)), caption: 'Sonderlöschmittel', liters, typeIds: resolveTypeIds('Sonderlöschmittel'), isWater: true });
+            }
+            const pm = text.match(/^([\d.]+)\s*l\s*\/\s*min\s*Pumpenleistung/i);
+            if (pm) {
+                const missingRate = parseInt(pm[1].replace(/\./g, ''), 10);
+                reqs.push({ count: Math.max(1, Math.ceil(missingRate / 2000)), caption: 'Pumpenleistung', liters: missingRate, typeIds: resolveTypeIds('Feuerlöschpumpe'), isWater: true });
+            }
+        }
+        if (obj.long_text && /Gefangene?\s+soll|abtransportiert\s+werden|Verdächtige?\s+soll/i.test(obj.long_text)) {
+            // prisoners_count ist im Feed eine echte Zahl – zuverlässiger als das bisherige
+            // Namen-Zählen im DOM-Gefangenen-Feld.
+            const count = Math.max(1, Number(marker.prisoners_count) || 0);
+            reqs.push({ count, caption: 'Gefangenentransport', typeIds: [32], fromPrisoner: true });
+        }
+        return reqs;
+    }
+
+    function parseRequirements(entry, id) {
+        const marker = ownMissionMarkers.get(String(id));
+        const markerReqs = marker ? parseMarkerRequirements(marker) : null;
+        const reqs = markerReqs != null ? [...markerReqs] : [];
+        if (markerReqs == null) {
+        // DOM-Fallback: kein (verwertbarer) Karten-Feed-Eintrag für diesen Einsatz.
         const missing = entry.querySelector(`#mission_missing_${id} [data-requirement-type="vehicles"]`);
         if (missing) {
             const text = missing.textContent.replace(/\u00a0/g, ' ');
@@ -1748,6 +1833,9 @@
                 fromPrisoner: true
             });
         }
+        } // Ende DOM-Fallback (markerReqs == null)
+        // Patienten-Anforderungen (RTW/NEF/LNA/OrgL aus "Wir benötigen: ...") stehen NICHT im
+        // Karten-Feed – deshalb IMMER aus dem DOM lesen, unabhängig davon, ob der Feed griff.
         for (const p of entry.querySelectorAll(`#mission_patients_${id} .alert-danger`)) {
             const full = p.textContent.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ');
             const pm = full.match(/Wir benötigen:\s*(.+)/);
@@ -3030,6 +3118,7 @@
         // 3) Einsätze: ELW-Erstalarm & fehlende Fahrzeuge
         try { updateCompletedStats(); } catch (e) { /* unkritisch */ }
         try { await healthCheck(); } catch (e) { /* unkritisch */ }
+        try { await refreshOwnMissionMarkers(); } catch (e) { /* unkritisch, DOM-Fallback in parseRequirements greift */ }
         const missions = collectMissions();
         $status.textContent = overloadPaused
             ? `⏸️ Einsätze pausiert (${openCount} offen)`
