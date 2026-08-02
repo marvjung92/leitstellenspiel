@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.65
+// @version      5.66
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Erkennt fehlende Pumpenleistung. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Neu: Live-Fortschritt im Status ("Sprechwünsche bearbeiten… x/y", "Einsätze abarbeiten… x/y").
@@ -16,13 +16,13 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.65';
+    const SCRIPT_VERSION = '5.66';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
-        scanInterval: 8000,        // ms zwischen Scans
-        alarmDelay: 1500,          // ms Basis-Pause zwischen Alarmierungen (+/- Jitter)
-        transportDelay: 1200,      // ms Basis-Pause zwischen Transport-Abarbeitungen (+/- Jitter)
+        scanInterval: 6000,        // ms zwischen Scans (01.08. von 8000 auf 6000 gesenkt – schnelleres Abarbeiten)
+        alarmDelay: 900,           // ms Basis-Pause zwischen Alarmierungen (+/- Jitter) (01.08. von 1500 gesenkt)
+        transportDelay: 700,       // ms Basis-Pause zwischen Transport-Abarbeitungen (+/- Jitter) (01.08. von 1200 gesenkt)
         cooldown: 90000,           // ms pro Einsatz, bevor erneut alarmiert wird
         retryEmptyCooldown: 300000, // ms Wartezeit, wenn beim letzten Versuch NICHTS verfügbar war (Flotte leer)
         ignoreRequirements: [],     // Anforderungen, die nie bedient werden sollen (z. B. ['Radlader (BRmG R)'])
