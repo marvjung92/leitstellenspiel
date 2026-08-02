@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.71
+// @version      5.72
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Live-Fortschritt im Status. Neu: Anforderungen (Fahrzeuge/Personal/Wasser/Pumpenleistung/Gefangenentransport) primär aus dem strukturierten Karten-Feed (mission_markers_own) statt fragilem HTML-Regex, mit DOM-Fallback.
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.71';
+    const SCRIPT_VERSION = '5.72';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -62,6 +62,7 @@
         vehicleRealarmGuard: 8 * 60000,        // kürzlich alarmiertes Fahrzeug so lange NICHT an einen anderen Einsatz vergeben (verhindert Selbst-Umleitung/Fahrzeug-Klau zwischen eigenen Einsätzen)
         vehicleFailBlacklistAfter: 3,          // Fahrzeug nach so vielen NICHT bestätigten Alarmen IN FOLGE vorübergehend sperren
         vehicleFailBlacklistMs: 60 * 60000,    // Sperrdauer für Problemfahrzeuge (danach neuer Versuch)
+        autoSetFms6OnBlacklist: true,          // Problemfahrzeuge zusätzlich per API auf FMS 6 (außer Betrieb) setzen – landen dann in Status-6-Übersicht
         travelSlowSec: 600,                    // Anfahrten über dieser Dauer (Sekunden) gelten als "Langläufer" und werden einzeln geloggt (🐢)
         travelGoalSec: 1800,                   // ZIELMARKE: keine Anfahrt über 30 min. Verstöße werden mit Einsatzadresse in der Bau-Liste gesammelt (🚨)
         travelSpeedKmh: 72.5,                  // Ø-Tempo für die Fahrzeit-Schätzung aus Luftlinie (kalibriert: MTF Drohne 12,8 km ↔ 634 s)
@@ -2321,6 +2322,16 @@
         return sent;
     }
 
+    // Problemfahrzeug (wiederholt NICHT losgefahren) zusätzlich per API auf FMS 6 setzen,
+    // damit es in der Status-6-Übersicht auftaucht und dort mit klassifiziert werden kann.
+    async function setVehicleFms6(vehicleId) {
+        try {
+            const res = await fetch(`/vehicles/${vehicleId}/set_fms/6`, { credentials: 'same-origin' });
+            if (res.ok) dbg(`[Fzg ${vehicleId}] FMS-Status per API auf 6 (außer Betrieb) gesetzt`);
+            else dbg(`[Fzg ${vehicleId}] FMS-6-Setzen fehlgeschlagen: HTTP ${res.status}`);
+        } catch (e) { dbg(`[Fzg ${vehicleId}] FMS-6-Setzen fehlgeschlagen: ${e.message}`); }
+    }
+
     async function dispatch(mission) {
         const { token, boxes: allBoxes, enRoute, enRouteDriving } = await loadVehicleBoxes(mission.id);
         // Fahrzeuge, die in diesem Scan-Durchlauf bereits für einen anderen Einsatz alarmiert wurden,
@@ -2761,6 +2772,7 @@
                     if (e.fails >= (CONFIG.vehicleFailBlacklistAfter || 3)) {
                         e.blockedUntil = Date.now() + (CONFIG.vehicleFailBlacklistMs || 3600000);
                         log(`🚫 [#${mission.id}] Fahrzeug ${vid} (${vtName(e.typeId)}) fuhr zum ${e.fails}. Mal in Folge NICHT los – für ${Math.round((CONFIG.vehicleFailBlacklistMs || 3600000) / 60000)} min gesperrt. Bitte im Spiel prüfen (Werkstatt/Personal/Zuordnung)!`, '#f38ba8');
+                        if (CONFIG.autoSetFms6OnBlacklist) await setVehicleFms6(vid);
                     } else {
                         log(`⚠️ [#${mission.id}] Fahrzeug ${vid} (${vtName(b.typeId)}) wurde vom Spiel NICHT losgeschickt (${e.fails}. Fehlversuch)`, '#f9e2af');
                     }
