@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.63
+// @version      5.64
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Erkennt fehlende Pumpenleistung. Neu: 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button (räumt den größten Quota-Fresser weg).
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.63';
+    const SCRIPT_VERSION = '5.64';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -29,7 +29,7 @@
         vehicleCooldown: 60000,    // ms pro Fahrzeug-Sprechwunsch
         elwTypeIds: [3, 34],       // ELW 1, ELW 2 für Erstalarmierung
         elwFallbacks: ['GW-Bergrettung', 'Seenotrettungsboot', 'RTW', 'KdoW', 'FuStW'],  // wenn kein ELW frei: diese Typen als Erstschlag (öffnet den Einsatz, echte Anforderungen erscheinen dann)
-        maxPerScan: 30,            // max. Alarmierungen pro Durchlauf (bei voller Lage sonst werden hintere Einsätze nie erreicht)
+        maxPerScan: 60,            // max. Alarmierungen pro Durchlauf (bei voller Lage sonst werden hintere Einsätze nie erreicht) – am 01.08. von 30 auf 60 angehoben
         pauseThreshold: 0,         // ALT (0 = aus): Überlast-Pause übernimmt jetzt die Tempo-Treppe (speedPauseAbove/speedResumeAt in autoSpeed)
         prioritizeSpeakRequests: true, // LEITSTELLEN-PRINZIP: Status 5 (Sprechwunsch) hat Vorrang – erst
                                    //   Kräfte freigeben (Patient/Gefangener abmelden), dann neue Einsätze alarmieren.
