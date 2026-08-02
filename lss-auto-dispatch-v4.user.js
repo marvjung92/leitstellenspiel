@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.67
+// @version      5.68
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Live-Fortschritt im Status. Neu: Anforderungen (Fahrzeuge/Personal/Wasser/Pumpenleistung/Gefangenentransport) primär aus dem strukturierten Karten-Feed (mission_markers_own) statt fragilem HTML-Regex, mit DOM-Fallback.
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.67';
+    const SCRIPT_VERSION = '5.68';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -130,6 +130,10 @@
         // Eng gemappt auf die LF-Familie (Spiel-Hinweis "z. B. LF"). Falls das Spiel auch TLFs
         // anrechnet, hier die TLF-IDs (16-25) ergänzen.
         'Feuerlöschpumpe': [0, 30, 1, 6, 7, 8, 'HLF 10', 'LF 20 KatS', 'LF KatS'],
+        // "Tragehilfe (z.B. durch ein LF)" bei Patiententransporten (Beleg 01.08., #4356453898
+        // "Alkoholintoxikation" – bisher unbekannt, kein Fahrzeug gesendet). Klammerzusatz wird
+        // in lookup() gestrippt, hier steht deshalb nur "Tragehilfe".
+        'Tragehilfe': [0, 30, 1, 6, 7, 8, 'HLF 10', 'LF 20 KatS', 'LF KatS'],
         // "4x Flugfeldlöschfahrzeuge" (z.B. Flugzeug von Start-/Landebahn abgekommen):
         // Der Fahrzeugtyp heißt im Spiel "FLF" – Auflösung über die LSSM-Typliste.
         // Plural wird über die fahrzeuge->fahrzeug-Normalisierung abgedeckt.
