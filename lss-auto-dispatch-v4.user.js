@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.68
+// @version      5.69
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Live-Fortschritt im Status. Neu: Anforderungen (Fahrzeuge/Personal/Wasser/Pumpenleistung/Gefangenentransport) primär aus dem strukturierten Karten-Feed (mission_markers_own) statt fragilem HTML-Regex, mit DOM-Fallback.
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.68';
+    const SCRIPT_VERSION = '5.69';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -1918,7 +1918,14 @@
             }
             const isRed = !!el.querySelector('.mission_panel_red');
             const isYellow = !!el.querySelector('.mission_panel_yellow');
-            const participating = el.querySelector(`#mission_participant_${id}`)?.classList.contains('hidden') === false;
+            // Beteiligt? #mission_participant_<id> ist NUR ein Kategorie-Icon ("Rettungsdienst-Einsatz"),
+            // kein Status-Indikator (bestätigt an Einsatz #4356335105: Icon sichtbar, vehicle_state=0).
+            // Zuverlässige Quelle: vehicle_state aus dem Karten-Feed (0 = noch kein Fahrzeug zugewiesen).
+            // Nur wenn kein Feed-Eintrag existiert, auf den alten (unzuverlässigen) DOM-Check zurückfallen.
+            const marker = ownMissionMarkers.get(String(id));
+            const participating = marker
+                ? Number(marker.vehicle_state) > 0
+                : el.querySelector(`#mission_participant_${id}`)?.classList.contains('hidden') === false;
             const timeleft = Number(el.querySelector('.mission_overview_countdown')?.getAttribute('timeleft') || 0);
             const reqs = parseRequirements(el, id);
             // Gelbe Einsätze mit fehlenden Fahrzeugen: standardmäßig nachalarmieren (handleYellow)
