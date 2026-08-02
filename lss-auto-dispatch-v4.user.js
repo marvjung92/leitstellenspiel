@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.64
+// @version      5.65
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
-// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Erkennt fehlende Pumpenleistung. Neu: 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button (räumt den größten Quota-Fresser weg).
+// @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. Erkennt fehlende Pumpenleistung. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Neu: Live-Fortschritt im Status ("Sprechwünsche bearbeiten… x/y", "Einsätze abarbeiten… x/y").
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.64';
+    const SCRIPT_VERSION = '5.65';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -2969,8 +2969,10 @@
         const wishes = getSprechwuensche();
         let transports = 0;
         let prisonerTransports = 0;
-        for (const v of wishes) {
+        for (let wi = 0; wi < wishes.length; wi++) {
+            const v = wishes[wi];
             if (!running) break;
+            $status.textContent = `Sprechwünsche bearbeiten… ${wi + 1}/${wishes.length}`;
             // Patiententransporte sind durch maxTransportsPerScan begrenzt. Gefangenentransporte bekommen
             // einen EIGENEN Topf (maxPrisonerTransportsPerScan), damit sie bei vielen gleichzeitigen
             // Patienten-Sprechwünschen nicht verdrängt werden und der Einsatz nicht ewig rot bleibt.
@@ -3042,9 +3044,11 @@
         // Verbandschat: geteilte Einsätze zuerst unterstützen (ihre Alarme blockieren die Fahrzeuge
         // dann im scanweiten Merker, damit eigene Einsätze sie nicht doppelt verplanen).
         try { await handleAllianceChatMissions(); } catch (e) { dbg(`Chat-Unterstützung: ${e.message}`); }
-        for (const m of missions) {
+        for (let mi = 0; mi < missions.length; mi++) {
+            const m = missions[mi];
             if (!running) break;
             if (sent >= CONFIG.maxPerScan) { limited = true; break; }
+            if (!overloadPaused) $status.textContent = `Einsätze abarbeiten… ${mi + 1}/${missions.length}`;
             try {
                 const r = await dispatch(m);
                 state.set(m.id, { ...(state.get(m.id) || {}), lastAction: Date.now(), signature: m.signature, lastEmpty: !r.ok,
