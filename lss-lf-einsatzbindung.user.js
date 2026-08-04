@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS LF-Einsatzbindung
 // @namespace    http://tampermonkey.net/
-// @version      1.04
+// @version      1.05
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lf-einsatzbindung.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-lf-einsatzbindung.user.js
-// @description  Zeigt alle LFs, die aktuell in einem Einsatz gebunden sind – inkl. WELCHER Einsatz (klickbar). Datenquelle: /api/vehicles (FMS + Einsatzziel je Fahrzeug). Verbandseinsätze werden markiert.
+// @description  Zeigt alle LFs der Ausnahme-Leitstelle (siehe Top-Verband-Skript, 🔓-Button), die aktuell in einem Einsatz gebunden sind – inkl. WELCHER Einsatz (klickbar). Datenquelle: /api/vehicles (FMS + Einsatzziel je Fahrzeug). Verbandseinsätze werden markiert.
 // @match        https://www.leitstellenspiel.de/*
 // @grant        none
 // @run-at       document-idle
@@ -23,11 +23,53 @@
     const FMS_LABEL = { 1: 'frei (Funk)', 2: 'frei (Wache)', 3: 'Anfahrt', 4: 'vor Ort', 5: 'Sprechwunsch', 6: 'nicht bereit', 7: 'Patient', 8: 'Rückkehr', 9: 'Transport' };
     const FMS_COLOR = { 3: '#f9e2af', 4: '#fab387', 5: '#f38ba8', 7: '#f38ba8', 9: '#f38ba8' };
 
+    // Ausnahme-Leitstelle: gleicher localStorage-Schlüssel wie im Top-Verband-Skript (🔓-Button dort
+    // konfigurieren) – dieses Panel zeigt AUSSCHLIESSLICH die LFs der dort hinterlegten Leitstelle(n).
+    const EXEMPT_KEY = 'tv_exempt_dispatch';        // { leitstellen: [ids], names: [namensteile] }
+    const EXEMPTBLD_KEY = 'tv_exempt_buildings';    // Cache: { ts, ids: [gebäude-ids] }
+    function exemptConfig() {
+        try {
+            const c = JSON.parse(localStorage.getItem(EXEMPT_KEY) || '{}');
+            return { leitstellen: (c.leitstellen || []).map(String), names: (c.names || []).map(n => n.toLowerCase()) };
+        } catch (e) { return { leitstellen: [], names: [] }; }
+    }
+    let exemptBuildingIds = new Set();
+    (function loadCachedExemptBuildings() {
+        try {
+            const c = JSON.parse(localStorage.getItem(EXEMPTBLD_KEY) || 'null');
+            if (c && c.ids && c.ids.length && Date.now() - c.ts < 24 * 3600000) exemptBuildingIds = new Set(c.ids.map(String));
+        } catch (e) { /* egal */ }
+    })();
+    async function refreshExemptBuildings(force = false) {
+        const cfg = exemptConfig();
+        if (!cfg.leitstellen.length) { exemptBuildingIds = new Set(); return; }
+        if (!force && exemptBuildingIds.size) return; // Cache reicht
+        try {
+            const res = await fetch('/api/buildings', { credentials: 'same-origin' });
+            if (!res.ok) return;
+            const all = await res.json();
+            const set = new Set();
+            const leit = new Set(cfg.leitstellen);
+            const LEIT_FIELDS = ['leitstelle_building_id', 'leitstelle_id', 'dispatch_center_building_id', 'dispatch_center_id', 'building_leitstelle_id'];
+            for (const b of all) {
+                let lid = null;
+                for (const f of LEIT_FIELDS) if (b[f] != null) { lid = String(b[f]); break; }
+                if (leit.has(String(b.id)) || (lid && leit.has(lid))) set.add(String(b.id));
+            }
+            exemptBuildingIds = set;
+            try { localStorage.setItem(EXEMPTBLD_KEY, JSON.stringify({ ts: Date.now(), ids: [...set] })); } catch (e) { /* egal */ }
+        } catch (e) { console.warn('[LF-Bindung] /api/buildings nicht ladbar (Ausnahme-Leitstelle):', e); }
+    }
+
     async function fetchLfState() {
+        const cfg = exemptConfig();
+        if (!cfg.leitstellen.length) return { noExemptConfigured: true };
+        if (!exemptBuildingIds.size) await refreshExemptBuildings(true);
+
         const res = await fetch('/api/vehicles', { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status} bei /api/vehicles`);
         const all = await res.json();
-        const lfs = all.filter(v => LF_TYPE_IDS.includes(Number(v.vehicle_type)));
+        const lfs = all.filter(v => LF_TYPE_IDS.includes(Number(v.vehicle_type)) && exemptBuildingIds.has(String(v.building_id)));
         const bound = [], free = [], notReady = [];
         for (const v of lfs) {
             const fms = Number(v.fms_real ?? v.fms_show ?? 0);
@@ -36,7 +78,7 @@
             else if (fms === 6) notReady.push(v);
             else free.push(v);
         }
-        return { total: lfs.length, bound, free: free.length, notReady: notReady.length };
+        return { total: lfs.length, bound, free: free.length, notReady: notReady.length, buildingCount: exemptBuildingIds.size };
     }
 
     // Einsatzname aus der Sidebar (mit Verband-Kennung), sonst generisch.
@@ -62,6 +104,20 @@
     function render(panel, data) {
         const $status = panel.querySelector('#lfb-status');
         const $result = panel.querySelector('#lfb-result');
+        const $split = panel.querySelector('#lfb-split');
+
+        if (data.noExemptConfigured) {
+            $status.innerHTML = '<span style="color:#f38ba8;">Keine Ausnahme-Leitstelle konfiguriert.</span>';
+            $split.innerHTML = '';
+            $result.innerHTML = '<div style="color:#9399b2;padding:8px;">Bitte im Top-Verband-Skript über den 🔓-Button eine Ausnahme-Leitstelle (z.B. "Leitstelle Essen") hinterlegen – dieses Panel zeigt ausschließlich deren LFs.</div>';
+            return;
+        }
+        if (!data.buildingCount) {
+            $status.innerHTML = '<span style="color:#f38ba8;">Ausnahme-Leitstelle konfiguriert, aber 0 zugeordnete Gebäude gefunden.</span>';
+            $split.innerHTML = '';
+            $result.innerHTML = '<div style="color:#9399b2;padding:8px;">Bitte die Leitstellen-Gebäude-ID im Top-Verband-Skript (🔓-Button) prüfen.</div>';
+            return;
+        }
 
         $status.innerHTML = `<b>${data.total} LF gesamt</b> – `
             + `<span style="color:#f9e2af;">${data.bound.length} gebunden</span>, `
@@ -83,7 +139,6 @@
             const p = document.getElementById('mission_panel_' + mid);
             if (p && p.classList.contains('mission_panel_green')) greenMissions++;
         }
-        const $split = panel.querySelector('#lfb-split');
         $split.innerHTML = perMission.size
             ? `<span style="color:#a6e3a1;" title="Einsätze, an denen mindestens 1 eigenes LF angekommen ist (FMS 4/5)">📍 ${onSceneMissions} Einsätze mit LF vor Ort</span>`
               + ` · <span style="color:#f9e2af;" title="Einsätze, zu denen eigene LFs unterwegs sind, aber noch keins angekommen ist (nur FMS 3)">🚗 ${drivingMissions} noch in Anfahrt</span>`
@@ -167,7 +222,7 @@
         panel.style.cssText = 'position:fixed;top:160px;right:20px;z-index:99999;width:380px;max-height:74vh;display:flex;flex-direction:column;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:10px;padding:14px;font:13px/1.45 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);';
         panel.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <b style="font-size:14px;">📟 LF-Einsatzbindung <span id="lfb-stamp" style="color:#9399b2;font-size:10px;font-weight:400;margin-left:6px;"></span></b>
+                <b style="font-size:14px;">📟 LF-Einsatzbindung <span style="color:#9399b2;font-weight:400;">(Ausnahme-Leitstelle)</span> <span id="lfb-stamp" style="color:#9399b2;font-size:10px;font-weight:400;margin-left:6px;"></span></b>
                 <div>
                     <button id="lfb-refresh" title="Aktualisieren" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:15px;">⟳</button>
                     <button id="lfb-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
@@ -176,7 +231,7 @@
             <div id="lfb-status" style="margin-bottom:2px;font-size:12px;">Lade…</div>
             <div id="lfb-split" style="margin-bottom:6px;font-size:12px;"></div>
             <div id="lfb-result" style="overflow:auto;flex:1;"></div>
-            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Quelle: /api/vehicles (FMS + Einsatzziel je LF). 💰 = Verbandseinsatz, ✅/grüner Rand = Einsatz bereits grün (kein Bedarf mehr). Randfarbe = Einsatzstatus (rot/gelb/grün). Klick auf Einsatz öffnet ihn, Klick aufs LF öffnet die Fahrzeugseite. Aktualisiert sich jede Minute, solange offen. Hinweis: Die Spiel-API puffert kurz – direkt nach einer Alarmierung kann der Stand einige Sekunden hinterherhinken.</div>
+            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Zeigt NUR LFs der im Top-Verband-Skript hinterlegten Ausnahme-Leitstelle (🔓-Button dort). Quelle: /api/vehicles (FMS + Einsatzziel je LF). 💰 = Verbandseinsatz, ✅/grüner Rand = Einsatz bereits grün (kein Bedarf mehr). Randfarbe = Einsatzstatus (rot/gelb/grün). Klick auf Einsatz öffnet ihn, Klick aufs LF öffnet die Fahrzeugseite. Aktualisiert sich jede Minute, solange offen. Hinweis: Die Spiel-API puffert kurz – direkt nach einer Alarmierung kann der Stand einige Sekunden hinterherhinken.</div>
         `;
         document.body.appendChild(panel);
         panel.querySelector('#lfb-close').onclick = () => { panel.remove(); if (refreshTimer) clearInterval(refreshTimer); refreshTimer = null; };
