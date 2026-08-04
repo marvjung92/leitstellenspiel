@@ -502,6 +502,39 @@
         return false;
     }
 
+    // Diagnose/Anzeige (v1.68): wie viele LFs der Ausnahme-Leitstelle sind laut /api/vehicles
+    // GERADE frei? Unabhängige Gegenprobe zu "kein LF frei" beim Senden – zeigt sofort, ob die
+    // Gebäude-Zuordnung überhaupt Fahrzeuge findet (0 zugeordnete Gebäude -> IMMER 0 frei).
+    let exemptFleet = null; // { free, total, buildings } | null
+    let exemptFleetTs = 0;
+    let exemptFleetBusy = false;
+    async function refreshExemptFleet(panel) {
+        const cfg = exemptConfig();
+        if (!cfg.leitstellen.length) { exemptFleet = null; return; }
+        if (exemptFleetBusy || Date.now() - exemptFleetTs < 30000) return; // nicht öfter als alle 30s
+        exemptFleetBusy = true;
+        try {
+            if (!exemptBuildingIds.size) await refreshExemptBuildings(true);
+            const res = await fetch('/api/vehicles', { credentials: 'same-origin', cache: 'no-store' });
+            if (!res.ok) return;
+            const all = await res.json();
+            let free = 0, total = 0;
+            for (const v of all) {
+                if (!LF_TYPE_IDS.includes(Number(v.vehicle_type))) continue;
+                if (!exemptBuildingIds.has(String(v.building_id))) continue;
+                total++;
+                const fms = Number(v.fms_real ?? v.fms_show ?? 0);
+                const bound = v.target_type === 'mission' && v.target_id != null;
+                if (!bound && (fms === 1 || fms === 2) && !isVehicleBlocked(v.id)) free++;
+            }
+            exemptFleet = { free, total, buildings: exemptBuildingIds.size };
+            exemptFleetTs = Date.now();
+            const p = panel || document.getElementById('tv-panel');
+            if (p) render(p);
+        } catch (e) { console.warn('[Top-Verband] Essen-Flottenzählung fehlgeschlagen:', e); }
+        finally { exemptFleetBusy = false; }
+    }
+
     // Einsatzseite laden, CSRF-Token holen und ein einzelnes FREIES LF finden (erste anklickbare Checkbox
     // mit passendem vehicle_type_id). Gibt { token, lfId } zurück; lfId = null, wenn kein LF frei ist.
     async function findFreeLf(missionId) {
@@ -673,13 +706,27 @@
     function setAutoStamp() { lastAutoStamp = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }); }
 
 
+    // Essen-Flottenzahl als HTML-Zeile – wiederverwendet in render() UND nach jedem Sende-Lauf,
+    // damit sie beim finalen "✅ Fertig: ..."/"🤖 Automatik: ..."-Text nicht verschwindet.
+    function exemptStatusLine() {
+        const cfg = exemptConfig();
+        if (!cfg.leitstellen.length) {
+            return '<br><span style="color:#f38ba8;">⚠️ Keine Ausnahme-Leitstelle konfiguriert (🔓) – es wird kein LF für Verbandseinsätze gesendet.</span>';
+        }
+        if (!exemptFleet) return '';
+        return `<br><b style="color:${exemptFleet.buildings ? '#94e2d5' : '#f38ba8'};" title="Aktuell freie LF der Ausnahme-Leitstelle laut /api/vehicles – unabhängige Gegenprobe zum Sende-Ergebnis">🏗️ Essen: ${exemptFleet.free}/${exemptFleet.total} LF frei${exemptFleet.buildings ? ` (${exemptFleet.buildings} Gebäude)` : ' – 0 Gebäude zugeordnet!'}</b>`;
+    }
+
     function render(panel) {
+        refreshExemptFleet(panel); // nicht abwarten – rendert sich bei Erfolg selbst nach
+        const exemptLine = exemptStatusLine();
+
         const { list, lssmSeen } = collectTop();
         const $status = panel.querySelector('#tv-status');
         const $result = panel.querySelector('#tv-result');
 
         if (list.length === 0) {
-            $status.textContent = 'Keine offenen freigegebenen/Verband-Einsätze gefunden.';
+            $status.innerHTML = 'Keine offenen freigegebenen/Verband-Einsätze gefunden.' + exemptLine;
             $result.innerHTML = '';
             return;
         }
@@ -692,7 +739,7 @@
         const shown = [...targets, ...alreadyDone, ...below]; // Ziele zuerst, dann erledigte, dann Kontext
 
         if (!lssmSeen) {
-            $status.innerHTML = `<span style="color:#f9e2af;">${list.length} freigegebene Einsätze gefunden, aber kein Verdienst-Wert lesbar.</span> Ist im LSSM-Addon die „Ø Credits"-Spalte in der Einsatzliste aktiv?`;
+            $status.innerHTML = `<span style="color:#f9e2af;">${list.length} freigegebene Einsätze gefunden, aber kein Verdienst-Wert lesbar.</span> Ist im LSSM-Addon die „Ø Credits"-Spalte in der Einsatzliste aktiv?` + exemptLine;
         } else {
             const chatIds = collectChatMissionIds();
             const chatOpen = list.filter(m => chatIds.has(m.id) && !isSent(m.id)).length;
@@ -705,7 +752,8 @@
                 + (chatOpen ? ` · <b style="color:#fab387;" title="Im Verbandschat geteilte Einsätze ohne eigenes LF – werden unabhängig von der Credits-Schwelle angefahren">💬 ${chatOpen} Chat-Einsätze offen</b>` : '')
                 + ` · <b style="color:#a6e3a1;">${doneCount} angefahren (24 h)</b>`
                 + ` · ${autoMode ? `<span style="color:#a6e3a1;">Automatik AN${lastAutoStamp ? ` (zuletzt ${lastAutoStamp})` : ''}</span>` : '<span style="color:#9399b2;">Automatik aus</span>'}`
-                + (noValue ? `<br><span style="color:#f9e2af;" title="Diese Verbandseinsätze haben keinen lesbaren Ø-Credits-Wert (LSSM) und können deshalb NIE Ziel werden – Diagnose: Shift+Klick auf ⟳">⚠️ ${noValue} Verbandseinsatz${noValue > 1 ? 'e' : ''} ohne Ø-Wert – fallen still raus!</span>` : '');
+                + (noValue ? `<br><span style="color:#f9e2af;" title="Diese Verbandseinsätze haben keinen lesbaren Ø-Credits-Wert (LSSM) und können deshalb NIE Ziel werden – Diagnose: Shift+Klick auf ⟳">⚠️ ${noValue} Verbandseinsatz${noValue > 1 ? 'e' : ''} ohne Ø-Wert – fallen still raus!</span>` : '')
+                + exemptLine;
         }
 
         let html = '';
