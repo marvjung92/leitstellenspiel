@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.66
+// @version      1.67
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -13,6 +13,10 @@
 
 (function () {
     'use strict';
+
+    // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
+    // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
+    const SCRIPT_VERSION = '1.67';
 
     const TOP_N = 5;
     const CREDIT_THRESHOLD = 4999;           // ab "höher als" diesem Verdienst je 1 LF senden (">" strikt -> 5.000 ist dabei)
@@ -742,7 +746,7 @@
         panel.style.cssText = 'position:fixed;top:120px;right:20px;z-index:99999;width:340px;max-height:70vh;display:flex;flex-direction:column;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:10px;padding:14px;font:13px/1.45 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);';
         panel.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <b style="font-size:14px;">💰 Top-Verband-Einsätze</b>
+                <b style="font-size:14px;">💰 Top-Verband-Einsätze <span style="color:#9399b2;font-size:10px;font-weight:400;">v${SCRIPT_VERSION}</span></b>
                 <div>
                     <button id="tv-refresh" title="Aktualisieren" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:15px;">⟳</button>
                     <button id="tv-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
