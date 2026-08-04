@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.67
+// @version      1.68
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -16,7 +16,7 @@
 
     // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
-    const SCRIPT_VERSION = '1.67';
+    const SCRIPT_VERSION = '1.68';
 
     const TOP_N = 5;
     const CREDIT_THRESHOLD = 4999;           // ab "höher als" diesem Verdienst je 1 LF senden (">" strikt -> 5.000 ist dabei)
@@ -676,7 +676,7 @@
         const r = await doSend(targets, t => { $status.innerHTML = t; }, addSendLogEntry);
         if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
         render(panel);
-        panel.querySelector('#tv-status').innerHTML = `✅ Fertig: ${resultText(r)}`;
+        panel.querySelector('#tv-status').innerHTML = `✅ Fertig: ${resultText(r)}` + exemptStatusLine();
     }
 
     // Automatik-Tick: alle 3 min. Liste aktualisieren und – wenn Automatik AN – ohne Rückfrage senden.
@@ -699,7 +699,7 @@
         setAutoStamp();
         console.log(`[Top-Verband] Automatik: ${resultText(r)}`);
         const p2 = document.getElementById('tv-panel');
-        if (p2) { render(p2); p2.querySelector('#tv-status').innerHTML = `🤖 Automatik: ${resultText(r)}`; }
+        if (p2) { render(p2); p2.querySelector('#tv-status').innerHTML = `🤖 Automatik: ${resultText(r)}` + exemptStatusLine(); }
     }
 
     let lastAutoStamp = '';
