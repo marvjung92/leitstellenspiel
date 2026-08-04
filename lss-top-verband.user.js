@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.65
+// @version      1.66
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -657,7 +657,7 @@
             .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert
         if (!targets.length) { setAutoStamp(); return; }
         autoRunning = true;
-        const r = await doSend(targets, t => { const p = document.getElementById('tv-panel'); if (p) p.querySelector('#tv-status').innerHTML = '🤖 ' + t; });
+        const r = await doSend(targets, t => { const p = document.getElementById('tv-panel'); if (p) p.querySelector('#tv-status').innerHTML = '🤖 ' + t; }, addSendLogEntry);
         autoRunning = false;
         setAutoStamp();
         console.log(`[Top-Verband] Automatik: ${resultText(r)}`);
