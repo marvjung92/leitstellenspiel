@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.70
+// @version      1.71
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -16,7 +16,7 @@
 
     // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
-    const SCRIPT_VERSION = '1.70';
+    const SCRIPT_VERSION = '1.71';
 
     const TOP_N = 5;
     const CREDIT_THRESHOLD = 4999;           // ab "höher als" diesem Verdienst je 1 LF senden (">" strikt -> 5.000 ist dabei)
@@ -845,7 +845,7 @@
                     <button id="tv-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
                 </div>
             </div>
-            <div id="tv-status" style="margin-bottom:8px;font-size:12px;"></div>
+            <div id="tv-status" style="margin-bottom:20px;font-size:12px;line-height:1.7;"></div>
             <div id="tv-sendlog" style="display:none;max-height:180px;overflow:auto;font-size:13px;margin-bottom:8px;"></div>
             <div style="display:flex;gap:6px;margin-bottom:8px;">
                 <button id="tv-sendlf" title="Jetzt einmalig an alle offenen Einsätze über der Schwelle je 1 LF senden" style="flex:1;padding:7px 10px;background:#f38ba8;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Jetzt senden &gt; ${CREDIT_THRESHOLD.toLocaleString('de-DE')} 💰</button>
