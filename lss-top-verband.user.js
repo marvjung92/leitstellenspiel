@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.63
+// @version      1.64
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. Neu: 🔓 Ausnahme-Leitstelle – deren LFs bedienen weiter Verbandseinsätze, auch wenn die 35er-Reserve erreicht ist.
@@ -32,6 +32,38 @@
         if (freeCount == null) return CREDIT_THRESHOLD; // API nicht verfügbar -> Basis-Schwelle
         for (const step of THRESHOLD_LADDER) if (freeCount <= step.maxFree) return step.min;
         return CREDIT_THRESHOLD;
+    }
+
+    // Wiederholt NICHT losfahrende Fahrzeuge sperren + auf FMS 6 setzen (identisch zum Auto-Dispatch-
+    // Skript, GLEICHER Schlüssel 'ad_vehicle_fails' – ein Fahrzeug hat ja unabhängig davon, welches
+    // Skript es alarmiert hat, dasselbe echte Problem, daher zählen Fehlversuche skriptübergreifend).
+    const VFAIL_KEY = 'ad_vehicle_fails';
+    const VFAIL_AFTER = 3;                    // nach so vielen NICHT bestätigten Alarmen IN FOLGE sperren
+    const VFAIL_BLOCK_MS = 60 * 60000;        // Sperrdauer (danach neuer Versuch)
+    const vehicleFails = new Map(); // vehicleId -> { fails, lastTs, blockedUntil }
+    try {
+        const saved = JSON.parse(localStorage.getItem(VFAIL_KEY) || '{}');
+        const cutoff = Date.now() - 24 * 3600000;
+        for (const [vid, e] of Object.entries(saved)) if (e && (e.lastTs || 0) > cutoff) vehicleFails.set(vid, e);
+    } catch (e) { /* egal */ }
+    function persistVehicleFails() {
+        const obj = {};
+        const cutoff = Date.now() - 24 * 3600000;
+        for (const [vid, e] of vehicleFails) if (e.lastTs > cutoff) obj[vid] = e;
+        const payload = JSON.stringify(obj);
+        try { localStorage.setItem(VFAIL_KEY, payload); if (localStorage.getItem(VFAIL_KEY) === payload) return; } catch (e) { /* Quota? -> aufräumen */ }
+        for (const k of ['tv_send_log']) { try { localStorage.removeItem(k); } catch (e) {} }
+        try { localStorage.setItem(VFAIL_KEY, payload); } catch (e) { console.error('[Top-Verband] Fehlversuch-Zähler konnte nicht gespeichert werden (Speicher voll).'); }
+    }
+    async function setVehicleFms6(vehicleId) {
+        try {
+            const res = await fetch(`/vehicles/${vehicleId}/set_fms/6`, { credentials: 'same-origin' });
+            console.warn(`[Top-Verband] FMS-6-Setzen für Fahrzeug ${vehicleId}: ${res.ok ? 'OK' : 'HTTP ' + res.status}`);
+        } catch (e) { console.warn(`[Top-Verband] FMS-6-Setzen für Fahrzeug ${vehicleId} fehlgeschlagen: ${e.message}`); }
+    }
+    function isVehicleBlocked(vehicleId) {
+        const e = vehicleFails.get(String(vehicleId));
+        return !!(e && e.blockedUntil > Date.now());
     }
 
     // Automatik-Schalter merken (überlebt Reloads). Standard AUS – bewusst einmal einschalten.
@@ -482,6 +514,7 @@
             const t = Number(cb.getAttribute('vehicle_type_id'));
             if (!LF_TYPE_IDS.includes(t)) continue;
             if (blocked.has(String(cb.value))) continue;   // manuelle Fahrzeug-Sperrliste
+            if (isVehicleBlocked(cb.value)) continue;      // wiederholt NICHT losgefahren -> vorübergehend gesperrt
             if (isCityVehicle(cb, cfg)) { citySkipped++; continue; } // Innenstadt bleibt zu Hause
             if (exemptOnly && !isExemptVehicle(cb, exCfg)) continue; // Reserve knapp -> nur Ausnahme-Leitstelle
             lfId = cb.value;
@@ -557,6 +590,25 @@
                 });
                 if (post.status === 429) { aborted = true; break; } // Rate-Limit -> abbrechen
                 if (!post.ok && post.status !== 302) { err++; continue; }
+                // Server-Antwort verifizieren: Fahrzeug wirklich losgefahren (Werkstatt/Personal/
+                // Zuordnung können den Alarm HTTP-seitig "erfolgreich" durchlaufen lassen, ohne dass
+                // das LF tatsächlich startet) – identische Prüfung wie im Auto-Dispatch-Skript.
+                const respText = await post.text();
+                const confirmed = respText.includes(`vehicle_drive_${lfId}`) || respText.includes(`vehicle_row_${lfId}`);
+                const key = String(lfId);
+                if (confirmed) {
+                    if (vehicleFails.has(key)) { vehicleFails.delete(key); persistVehicleFails(); }
+                } else {
+                    const e = vehicleFails.get(key) || { fails: 0 };
+                    e.fails++; e.lastTs = Date.now();
+                    if (e.fails >= VFAIL_AFTER) {
+                        e.blockedUntil = Date.now() + VFAIL_BLOCK_MS;
+                        console.warn(`[Top-Verband] 🚫 Fahrzeug ${lfId} fuhr zum ${e.fails}. Mal in Folge NICHT los – für ${Math.round(VFAIL_BLOCK_MS / 60000)} min gesperrt, FMS wird auf 6 gesetzt.`);
+                        setVehicleFms6(lfId);
+                    }
+                    vehicleFails.set(key, e);
+                    persistVehicleFails();
+                }
                 markSent(m.id);
                 sent++;
                 if (reserveTight) exemptSent++;
