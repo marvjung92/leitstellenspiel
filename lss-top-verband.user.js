@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.71
+// @version      1.72
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -16,7 +16,7 @@
 
     // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
-    const SCRIPT_VERSION = '1.71';
+    const SCRIPT_VERSION = '1.72';
 
     const TOP_N = 5;
     const CREDIT_THRESHOLD = 4999;           // ab "höher als" diesem Verdienst je 1 LF senden (">" strikt -> 5.000 ist dabei)
@@ -248,9 +248,9 @@
                     in24hSpeicher: isSent(id),
                     zielStatus: !shared ? 'nicht als Verband erkannt'
                         : !open ? 'nicht offen (grün/fertig)'
-                        : credits == null ? 'KEIN Ø-WERT LESBAR -> fällt still raus!'
-                        : credits <= CREDIT_THRESHOLD ? `unter Schwelle (${credits.toLocaleString('de-DE')})`
                         : isSent(id) ? 'schon angefahren (24h)'
+                        : credits == null ? 'ZIEL (ohne Ø-Wert, wird trotzdem angefahren)'
+                        : credits <= CREDIT_THRESHOLD ? `unter Schwelle (${credits.toLocaleString('de-DE')})`
                         : 'ZIEL',
                 });
             }
@@ -328,7 +328,7 @@
         const lines = [];
         lines.push(`Top-Verband Diagnose – ${new Date().toLocaleString('de-DE')}`);
         lines.push(`Schwelle: > ${CREDIT_THRESHOLD.toLocaleString('de-DE')} | Einsätze in Sidebar: ${diag.length} | als Verband erkannt: ${shared.length}`);
-        lines.push(`Ziele: ${shared.filter(d => d.zielStatus === 'ZIEL').length} | ohne Ø-Wert: ${shared.filter(d => d.zielStatus.startsWith('KEIN')).length} | schon angefahren: ${shared.filter(d => d.zielStatus.startsWith('schon')).length}`);
+        lines.push(`Ziele: ${shared.filter(d => d.zielStatus.startsWith('ZIEL')).length} (davon ohne Ø-Wert: ${shared.filter(d => d.zielStatus.includes('ohne Ø-Wert')).length}) | schon angefahren: ${shared.filter(d => d.zielStatus.startsWith('schon')).length}`);
         lines.push('');
         lines.push('=== Als Verband erkannte Einsätze ===');
         for (const d of shared) {
@@ -631,9 +631,11 @@
                 alreadyBound++;
                 continue;
             }
-            // Ziele sind nach Verdienst absteigend sortiert (Chat-Ziele stehen vorn) -> beim ersten
-            // Nicht-Chat-Ziel unterhalb der Basis-Schwelle kann abgebrochen werden.
-            const belowThreshold = !m.fromChat && m.credits <= CREDIT_THRESHOLD;
+            // Ziele sind nach Verdienst absteigend sortiert (Chat-Ziele stehen vorn, Einsätze ohne
+            // lesbaren Ø-Wert (-1) ganz hinten) -> beim ersten Nicht-Chat-/Nicht-Unbekannt-Ziel
+            // unterhalb der Basis-Schwelle kann abgebrochen werden. Einsätze ohne Ø-Wert werden
+            // IMMER versucht, da sich ihr Verdienst gar nicht gegen die Schwelle prüfen lässt.
+            const belowThreshold = !m.fromChat && m.credits !== -1 && m.credits <= CREDIT_THRESHOLD;
             if (belowThreshold) {
                 held = targets.length - i;
                 break;
@@ -704,9 +706,9 @@
         const { list } = collectTop();
         const chatIds = collectChatMissionIds();
         const targets = list
-            .filter(m => (m.credits > CREDIT_THRESHOLD || chatIds.has(m.id)) && !isSent(m.id))
+            .filter(m => (m.credits > CREDIT_THRESHOLD || m.credits === -1 || chatIds.has(m.id)) && !isSent(m.id))
             .map(m => ({ ...m, fromChat: chatIds.has(m.id) }))
-            .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert
+            .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert (ohne Ø-Wert landet wegen -1 am Ende, wird aber trotzdem gesendet)
         const $status = panel.querySelector('#tv-status');
 
         if (!targets.length) {
@@ -734,9 +736,9 @@
         const { list } = collectTop();
         const chatIds = collectChatMissionIds();
         const targets = list
-            .filter(m => (m.credits > CREDIT_THRESHOLD || chatIds.has(m.id)) && !isSent(m.id))
+            .filter(m => (m.credits > CREDIT_THRESHOLD || m.credits === -1 || chatIds.has(m.id)) && !isSent(m.id))
             .map(m => ({ ...m, fromChat: chatIds.has(m.id) }))
-            .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert
+            .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert (ohne Ø-Wert landet wegen -1 am Ende, wird aber trotzdem gesendet)
         if (!targets.length) { setAutoStamp(); return; }
         autoRunning = true;
         const r = await doSend(targets, t => { const p = document.getElementById('tv-panel'); if (p) p.querySelector('#tv-status').innerHTML = '🤖 ' + t; }, addSendLogEntry);
@@ -777,10 +779,10 @@
         }
 
         const noValue = list.filter(m => m.credits < 0).length;
-        const overThreshold = list.filter(m => m.credits > CREDIT_THRESHOLD);
+        const overThreshold = list.filter(m => m.credits > CREDIT_THRESHOLD || m.credits === -1); // ohne Ø-Wert = immer Ziel
         const targets = overThreshold.filter(m => !isSent(m.id));   // echte Button-Ziele (noch nicht in 24h gesendet)
         const alreadyDone = overThreshold.filter(m => isSent(m.id)); // über Schwelle, aber in 24h schon angefahren
-        const below = list.filter(m => m.credits <= CREDIT_THRESHOLD).slice(0, TOP_N);
+        const below = list.filter(m => m.credits <= CREDIT_THRESHOLD && m.credits !== -1).slice(0, TOP_N);
         const shown = [...targets, ...alreadyDone, ...below]; // Ziele zuerst, dann erledigte, dann Kontext
 
         if (!lssmSeen) {
@@ -797,13 +799,13 @@
                 + (chatOpen ? ` · <b style="color:#fab387;" title="Im Verbandschat geteilte Einsätze ohne eigenes LF – werden unabhängig von der Credits-Schwelle angefahren">💬 ${chatOpen} Chat-Einsätze offen</b>` : '')
                 + ` · <b style="color:#a6e3a1;">${doneCount} angefahren (24 h)</b>`
                 + ` · ${autoMode ? `<span style="color:#a6e3a1;">Automatik AN${lastAutoStamp ? ` (zuletzt ${lastAutoStamp})` : ''}</span>` : '<span style="color:#9399b2;">Automatik aus</span>'}`
-                + (noValue ? `<br><span style="color:#f9e2af;" title="Diese Verbandseinsätze haben keinen lesbaren Ø-Credits-Wert (LSSM) und können deshalb NIE Ziel werden – Diagnose: Shift+Klick auf ⟳">⚠️ ${noValue} Verbandseinsatz${noValue > 1 ? 'e' : ''} ohne Ø-Wert – fallen still raus!</span>` : '')
+                + (noValue ? `<br><span style="color:#f9e2af;" title="Diese Verbandseinsätze haben keinen lesbaren Ø-Credits-Wert (LSSM) – werden deshalb IMMER angefahren, unabhängig von der Schwelle">⚠️ ${noValue} Verbandseinsatz${noValue > 1 ? 'e' : ''} ohne Ø-Wert – werden trotzdem angefahren</span>` : '')
                 + exemptLine;
         }
 
         let html = '';
         shown.forEach((m) => {
-            const over = m.credits > CREDIT_THRESHOLD;
+            const over = m.credits > CREDIT_THRESHOLD || m.credits === -1;
             const done = over && isSent(m.id);
             const target = over && !done;
             const credTxt = m.credits >= 0 ? (m.approx ? '≈ ' : '') + m.credits.toLocaleString('de-DE') + ' 💰' : '– kein Wert –';
