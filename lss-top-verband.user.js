@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.69
+// @version      1.70
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -16,7 +16,7 @@
 
     // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
-    const SCRIPT_VERSION = '1.69';
+    const SCRIPT_VERSION = '1.70';
 
     const TOP_N = 5;
     const CREDIT_THRESHOLD = 4999;           // ab "höher als" diesem Verdienst je 1 LF senden (">" strikt -> 5.000 ist dabei)
@@ -288,7 +288,13 @@
         $log.innerHTML = liveSendLog.map(e => {
             const when = new Date(e.ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             const mark = e.confirmed === false ? '⚠️' : '✅';
-            return `<div style="padding:2px 0;border-bottom:1px solid #313244;">${mark} ${when} #${e.id} „${e.name}" – LF ${e.lfId}${e.lfBuilding ? ` (${e.lfBuilding})` : ''}${e.confirmed === false ? ' – NICHT bestätigt' : ''}</div>`;
+            const color = e.confirmed === false ? '#f9e2af' : '#a6e3a1';
+            return `<div style="padding:5px 2px;border-bottom:1px solid #313244;line-height:1.4;">`
+                + `<span style="color:${color};">${mark}</span> `
+                + `<span style="color:#9399b2;">${when}</span> `
+                + `<b style="color:#cdd6f4;">#${e.id}</b> „${e.name}"<br>`
+                + `<span style="color:#9399b2;">→ LF ${e.lfId}${e.lfBuilding ? ` (${e.lfBuilding})` : ''}${e.confirmed === false ? ' – NICHT bestätigt' : ''}</span>`
+                + `</div>`;
         }).join('');
     }
     function isCityName(building, cfg) {
@@ -840,7 +846,7 @@
                 </div>
             </div>
             <div id="tv-status" style="margin-bottom:8px;font-size:12px;"></div>
-            <div id="tv-sendlog" style="display:none;max-height:110px;overflow:auto;font-size:11px;color:#9399b2;margin-bottom:8px;"></div>
+            <div id="tv-sendlog" style="display:none;max-height:180px;overflow:auto;font-size:13px;margin-bottom:8px;"></div>
             <div style="display:flex;gap:6px;margin-bottom:8px;">
                 <button id="tv-sendlf" title="Jetzt einmalig an alle offenen Einsätze über der Schwelle je 1 LF senden" style="flex:1;padding:7px 10px;background:#f38ba8;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Jetzt senden &gt; ${CREDIT_THRESHOLD.toLocaleString('de-DE')} 💰</button>
                 <button id="tv-auto" title="Automatik: alle 3 Minuten aktualisieren und ohne Rückfrage je 1 LF senden" style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;">🤖 Auto</button>
