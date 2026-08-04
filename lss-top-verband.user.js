@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.68
+// @version      1.69
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -16,7 +16,7 @@
 
     // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
-    const SCRIPT_VERSION = '1.68';
+    const SCRIPT_VERSION = '1.69';
 
     const TOP_N = 5;
     const CREDIT_THRESHOLD = 4999;           // ab "höher als" diesem Verdienst je 1 LF senden (">" strikt -> 5.000 ist dabei)
@@ -544,11 +544,50 @@
         const token = doc.querySelector('form[action*="alarm"] input[name="authenticity_token"]')?.value
                    || doc.querySelector('meta[name="csrf-token"]')?.content;
         if (!token) throw new Error('kein Token');
+
+        let boxes = [...doc.querySelectorAll('.vehicle_checkbox:not([disabled])')];
+        // "Fahrzeuganzeige begrenzt! Mehr Fahrzeuge laden!" – ohne das Nachladen fehlen bei großen
+        // Leitstellen (z.B. Essen mit vielen Wachen) potenziell ALLE freien LF, weil die Seite nur
+        // eine begrenzte Vorauswahl rendert (identischer Nachladepfad wie im Auto-Dispatch-Skript).
+        const more = doc.querySelector('a.missing_vehicles_load');
+        if (more) {
+            try {
+                const r2 = await fetch(more.getAttribute('href'), {
+                    credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                if (r2.ok) {
+                    const txt = await r2.text();
+                    const parseFragment = (html) => {
+                        const tpl = document.createElement('template');
+                        tpl.innerHTML = html;
+                        if (tpl.content.querySelector('.vehicle_checkbox')) return tpl.content;
+                        const tpl2 = document.createElement('template');
+                        tpl2.innerHTML = `<table><tbody>${html}</tbody></table>`;
+                        return tpl2.content;
+                    };
+                    let root = parseFragment(txt);
+                    let found = [...root.querySelectorAll('.vehicle_checkbox:not([disabled])')];
+                    if (!found.length && txt.includes('vehicle_checkbox')) {
+                        // JS-Antwort: HTML steckt escaped im Script -> entpacken und erneut parsen
+                        const un = txt
+                            .replace(/\\u003c/gi, '<').replace(/\\u003e/gi, '>').replace(/\\u0026/gi, '&')
+                            .replace(/\\"/g, '"').replace(/\\'/g, "'")
+                            .replace(/\\\//g, '/').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+                        root = parseFragment(un);
+                        found = [...root.querySelectorAll('.vehicle_checkbox:not([disabled])')];
+                    }
+                    const known = new Set(boxes.map(b => b.value));
+                    for (const b of found) if (!known.has(b.value)) boxes.push(b);
+                }
+            } catch (e) { console.warn(`[Top-Verband] "Mehr Fahrzeuge laden" fehlgeschlagen (#${missionId}):`, e); }
+        }
+
         let lfId = null, lfBuilding = null, citySkipped = 0;
         const blocked = manualBlacklist();
         const cfg = cityConfig();
         const exCfg = exemptConfig();
-        for (const cb of doc.querySelectorAll('.vehicle_checkbox:not([disabled])')) {
+        for (const cb of boxes) {
             const t = Number(cb.getAttribute('vehicle_type_id'));
             if (!LF_TYPE_IDS.includes(t)) continue;
             if (blocked.has(String(cb.value))) continue;   // manuelle Fahrzeug-Sperrliste
