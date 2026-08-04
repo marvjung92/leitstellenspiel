@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.72
+// @version      1.73
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -16,13 +16,13 @@
 
     // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
-    const SCRIPT_VERSION = '1.72';
+    const SCRIPT_VERSION = '1.73';
 
     const TOP_N = 5;
     const CREDIT_THRESHOLD = 4999;           // ab "höher als" diesem Verdienst je 1 LF senden (">" strikt -> 5.000 ist dabei)
     const LF_TYPE_IDS = [0, 1, 6, 7, 8, 30];  // alle LF-Varianten (LF, HLF, TLF, …) – identisch zum Dispatch-Script
-    const SEND_DELAY = 1200;                  // ms Pause zwischen zwei Alarmierungen (gegen Rate-Limit)
-    const AUTO_INTERVAL = 3 * 60 * 1000;      // Automatik-Takt: alle 3 Minuten aktualisieren + senden
+    const SEND_DELAY = 800;                   // ms Pause zwischen zwei Alarmierungen (gegen Rate-Limit)
+    const AUTO_INTERVAL = 30 * 1000;          // Automatik-Takt: alle 30 Sekunden aktualisieren + senden
 
     // Wiederholt NICHT losfahrende Fahrzeuge sperren + auf FMS 6 setzen (identisch zum Auto-Dispatch-
     // Skript, GLEICHER Schlüssel 'ad_vehicle_fails' – ein Fahrzeug hat ja unabhängig davon, welches
