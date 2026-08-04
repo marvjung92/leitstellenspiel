@@ -267,6 +267,26 @@
         if (sendLog.length > 300) sendLog = sendLog.slice(-300);
         try { localStorage.setItem(SENDLOG_KEY, JSON.stringify(sendLog)); } catch (e) { /* egal */ }
     }
+
+    // Live-Sende-Protokoll fürs Panel (nur In-Memory, keine Persistenz nötig – zeigt einfach,
+    // welches LF gerade zu welchem Einsatz raus ist, live während Senden/Automatik läuft).
+    let liveSendLog = [];
+    function addSendLogEntry(entry) {
+        liveSendLog.unshift({ ts: Date.now(), ...entry });
+        if (liveSendLog.length > 40) liveSendLog.length = 40;
+        renderSendLog();
+    }
+    function renderSendLog() {
+        const $log = document.querySelector('#tv-panel #tv-sendlog');
+        if (!$log) return;
+        if (!liveSendLog.length) { $log.style.display = 'none'; return; }
+        $log.style.display = 'block';
+        $log.innerHTML = liveSendLog.map(e => {
+            const when = new Date(e.ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const mark = e.confirmed === false ? '⚠️' : '✅';
+            return `<div style="padding:2px 0;border-bottom:1px solid #313244;">${mark} ${when} #${e.id} „${e.name}" – LF ${e.lfId}${e.lfBuilding ? ` (${e.lfBuilding})` : ''}${e.confirmed === false ? ' – NICHT bestätigt' : ''}</div>`;
+        }).join('');
+    }
     function isCityName(building, cfg) {
         const n = (building || '').toLowerCase();
         return cfg.names.some(x => x && n.includes(x));
@@ -507,9 +527,11 @@
     }
 
     // Kern: an die übergebenen Ziele je 1 LF senden. onProgress(text) optional für Statusanzeige.
+    // onSend(entry) optional: wird nach JEDEM tatsächlichen Sendeversuch aufgerufen (auch bei
+    // nicht bestätigter Fahrt) – für ein Live-Sende-Protokoll im Panel.
     // LFs kommen AUSSCHLIESSLICH aus der Ausnahme-Leitstelle (🔓-Button) – keine 35er-Reserve/
     // Schwellen-Leiter mehr, da die übrige Flotte für Verbandseinsätze nicht mehr angefasst wird.
-    async function doSend(targets, onProgress) {
+    async function doSend(targets, onProgress, onSend) {
         if (cityConfig().leitstellen.length && !cityBuildingIds.size) await refreshCityBuildings(true);
         const exCfg = exemptConfig();
         if (!exCfg.leitstellen.length) {
@@ -576,6 +598,7 @@
                 markSent(m.id);
                 sent++;
                 recordCitySkip({ id: m.id, name: m.name, building: lfBuilding, citySkipped, noLf: false, fromChat: !!m.fromChat });
+                if (onSend) onSend({ id: m.id, name: m.name, lfId, lfBuilding, confirmed });
             } catch (e) {
                 err++;
             }
@@ -613,7 +636,7 @@
         }
         const btn = panel.querySelector('#tv-sendlf');
         if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
-        const r = await doSend(targets, t => { $status.innerHTML = t; });
+        const r = await doSend(targets, t => { $status.innerHTML = t; }, addSendLogEntry);
         if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
         render(panel);
         panel.querySelector('#tv-status').innerHTML = `✅ Fertig: ${resultText(r)}`;
@@ -726,6 +749,7 @@
                 </div>
             </div>
             <div id="tv-status" style="margin-bottom:8px;font-size:12px;"></div>
+            <div id="tv-sendlog" style="display:none;max-height:110px;overflow:auto;font-size:11px;color:#9399b2;margin-bottom:8px;"></div>
             <div style="display:flex;gap:6px;margin-bottom:8px;">
                 <button id="tv-sendlf" title="Jetzt einmalig an alle offenen Einsätze über der Schwelle je 1 LF senden" style="flex:1;padding:7px 10px;background:#f38ba8;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Jetzt senden &gt; ${CREDIT_THRESHOLD.toLocaleString('de-DE')} 💰</button>
                 <button id="tv-auto" title="Automatik: alle 3 Minuten aktualisieren und ohne Rückfrage je 1 LF senden" style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;">🤖 Auto</button>
@@ -736,6 +760,7 @@
             <div style="color:#9399b2;font-size:10px;margin-top:8px;">Wert = geschätzter Verdienst aus dem LSSM-Addon. Nur offene (rot/gelb) freigegebene bzw. Verband-Einsätze.</div>
         `;
         document.body.appendChild(panel);
+        renderSendLog(); // ggf. vorhandene Historie aus einer vorherigen Panel-Instanz gleich zeigen
         panel.querySelector('#tv-close').onclick = () => panel.remove();
         panel.querySelector('#tv-refresh').onclick = (e) => { if (e.shiftKey) { downloadDiag(); return; } render(panel); };
         panel.querySelector('#tv-refresh').title = 'Aktualisieren (Shift+Klick = Diagnose-Datei: warum ist welcher Einsatz (k)ein Ziel?)';
