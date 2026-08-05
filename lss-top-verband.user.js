@@ -18,8 +18,6 @@
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
     const SCRIPT_VERSION = '1.74';
 
-    const TOP_N = 5;
-    const CREDIT_THRESHOLD = 4999;           // ab "höher als" diesem Verdienst je 1 LF senden (">" strikt -> 5.000 ist dabei)
     const LF_TYPE_IDS = [0, 1, 6, 7, 8, 30];  // alle LF-Varianten (LF, HLF, TLF, …) – identisch zum Dispatch-Script
     const SEND_DELAY = 800;                   // ms Pause zwischen zwei Alarmierungen (gegen Rate-Limit)
     const AUTO_INTERVAL = 30 * 1000;          // Automatik-Takt: alle 30 Sekunden aktualisieren + senden
@@ -249,8 +247,7 @@
                     zielStatus: !shared ? 'nicht als Verband erkannt'
                         : !open ? 'nicht offen (grün/fertig)'
                         : isSent(id) ? 'schon angefahren (24h)'
-                        : credits == null ? 'ZIEL (ohne Ø-Wert, wird trotzdem angefahren)'
-                        : credits <= CREDIT_THRESHOLD ? `unter Schwelle (${credits.toLocaleString('de-DE')})`
+                        : credits == null ? 'ZIEL (ohne Ø-Wert)'
                         : 'ZIEL',
                 });
             }
@@ -327,7 +324,7 @@
         const shared = diag.filter(d => d.alsVerbandErkannt);
         const lines = [];
         lines.push(`Top-Verband Diagnose – ${new Date().toLocaleString('de-DE')}`);
-        lines.push(`Schwelle: > ${CREDIT_THRESHOLD.toLocaleString('de-DE')} | Einsätze in Sidebar: ${diag.length} | als Verband erkannt: ${shared.length}`);
+        lines.push(`Kein Credit-Limit (alle offenen Verbandseinsätze sind Ziel) | Einsätze in Sidebar: ${diag.length} | als Verband erkannt: ${shared.length}`);
         lines.push(`Ziele: ${shared.filter(d => d.zielStatus.startsWith('ZIEL')).length} (davon ohne Ø-Wert: ${shared.filter(d => d.zielStatus.includes('ohne Ø-Wert')).length}) | schon angefahren: ${shared.filter(d => d.zielStatus.startsWith('schon')).length}`);
         lines.push('');
         lines.push('=== Als Verband erkannte Einsätze ===');
@@ -593,17 +590,25 @@
         const blocked = manualBlacklist();
         const cfg = cityConfig();
         const exCfg = exemptConfig();
+        // Diagnose-Zähler (v1.75): wenn am Ende kein LF gefunden wird, loggen wir GENAU, woran es
+        // lag – 0 Essen-LF auf der Seite (Anzeige-Limit?) vs. Essen-LF vorhanden aber blockiert.
+        let lfTypeCount = 0, essenLfCount = 0, blockedCount = 0, blacklistCount = 0;
         for (const cb of boxes) {
             const t = Number(cb.getAttribute('vehicle_type_id'));
             if (!LF_TYPE_IDS.includes(t)) continue;
-            if (blocked.has(String(cb.value))) continue;   // manuelle Fahrzeug-Sperrliste
-            if (isVehicleBlocked(cb.value)) continue;      // wiederholt NICHT losgefahren -> vorübergehend gesperrt
+            lfTypeCount++;
+            if (blocked.has(String(cb.value))) { blacklistCount++; continue; } // manuelle Fahrzeug-Sperrliste
+            if (isVehicleBlocked(cb.value)) { blockedCount++; continue; }      // wiederholt NICHT losgefahren -> vorübergehend gesperrt
             if (isCityVehicle(cb, cfg)) { citySkipped++; continue; } // Innenstadt bleibt zu Hause
             if (!isExemptVehicle(cb, exCfg)) continue;      // nur LFs der Ausnahme-Leitstelle (z.B. Essen)
+            essenLfCount++;
+            if (lfId) continue; // erstes gefundenes LF gewinnt, aber weiterzählen für die Diagnose
             lfId = cb.value;
             const tr = cb.closest('tr');
             lfBuilding = (tr && tr.getAttribute('building')) || null;
-            break;
+        }
+        if (!lfId) {
+            console.warn(`[Top-Verband] #${missionId}: kein LF frei – ${boxes.length} Fahrzeuge auf der Seite, ${lfTypeCount} davon LF-Typ, ${essenLfCount} davon aus Essen erkannt (blockiert: ${blockedCount}, Blacklist: ${blacklistCount}, Innenstadt: ${citySkipped}).`);
         }
         return { token, lfId, lfBuilding, citySkipped };
     }
@@ -679,14 +684,13 @@
             }
             await new Promise(r => setTimeout(r, SEND_DELAY));
         }
-        return { sent, noLf, err, aborted, alreadyBound, held };
+        return { sent, noLf, err, aborted, alreadyBound };
     }
 
     function resultText(r) {
         if (r.noExemptConfigured) return 'Keine Ausnahme-Leitstelle konfiguriert (🔓-Button) – es kann kein LF gesendet werden.';
         return `${r.sent} LF gesendet`
             + (r.alreadyBound ? `, ${r.alreadyBound}× übersprungen (eigenes LF schon unterwegs)` : '')
-            + (r.held ? `, ${r.held} zurückgestellt (unter ${CREDIT_THRESHOLD.toLocaleString('de-DE')} Verdienst)` : '')
             + (r.noLf ? `, ${r.noLf}× kein LF frei` : '')
             + (r.err ? `, ${r.err} Fehler` : '')
             + (r.aborted ? ' (Rate-Limit – Abbruch)' : '') + '.';
@@ -697,16 +701,16 @@
         const { list } = collectTop();
         const chatIds = collectChatMissionIds();
         const targets = list
-            .filter(m => (m.credits > CREDIT_THRESHOLD || m.credits === -1 || chatIds.has(m.id)) && !isSent(m.id))
+            .filter(m => !isSent(m.id)) // ALLE offenen Verbandseinsätze sind Ziel, kein Credit-Limit mehr
             .map(m => ({ ...m, fromChat: chatIds.has(m.id) }))
-            .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert (ohne Ø-Wert landet wegen -1 am Ende, wird aber trotzdem gesendet)
+            .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert (nur Anzeige-Reihenfolge)
         const $status = panel.querySelector('#tv-status');
 
         if (!targets.length) {
-            $status.innerHTML = `<span style="color:#f9e2af;">Keine (neuen) Einsätze über ${CREDIT_THRESHOLD.toLocaleString('de-DE')} 💰 gefunden.</span>`;
+            $status.innerHTML = `<span style="color:#f9e2af;">Keine (neuen) offenen Verbandseinsätze gefunden.</span>`;
             return;
         }
-        if (!window.confirm(`An ${targets.length} Einsätze über ${CREDIT_THRESHOLD.toLocaleString('de-DE')} 💰 je 1 LF senden?`)) {
+        if (!window.confirm(`An ${targets.length} offene Verbandseinsätze je 1 LF senden?`)) {
             return;
         }
         const btn = panel.querySelector('#tv-sendlf');
@@ -727,9 +731,9 @@
         const { list } = collectTop();
         const chatIds = collectChatMissionIds();
         const targets = list
-            .filter(m => (m.credits > CREDIT_THRESHOLD || m.credits === -1 || chatIds.has(m.id)) && !isSent(m.id))
+            .filter(m => !isSent(m.id)) // ALLE offenen Verbandseinsätze sind Ziel, kein Credit-Limit mehr
             .map(m => ({ ...m, fromChat: chatIds.has(m.id) }))
-            .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert (ohne Ø-Wert landet wegen -1 am Ende, wird aber trotzdem gesendet)
+            .sort((a, b) => (b.fromChat - a.fromChat) || (b.credits - a.credits)); // Chat zuerst, dann nach Wert (nur Anzeige-Reihenfolge)
         if (!targets.length) { setAutoStamp(); return; }
         autoRunning = true;
         const r = await doSend(targets, t => { const p = document.getElementById('tv-panel'); if (p) p.querySelector('#tv-status').innerHTML = '🤖 ' + t; }, addSendLogEntry);
@@ -835,7 +839,7 @@
             <div id="tv-status" style="margin-bottom:20px;font-size:12px;line-height:1.7;"></div>
             <div id="tv-sendlog" style="display:none;height:220px;overflow-y:auto;font-size:13px;margin-bottom:8px;flex-shrink:0;"></div>
             <div style="display:flex;gap:6px;margin-bottom:8px;">
-                <button id="tv-sendlf" title="Jetzt einmalig an alle offenen Einsätze über der Schwelle je 1 LF senden" style="flex:1;padding:7px 10px;background:#f38ba8;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Jetzt senden &gt; ${CREDIT_THRESHOLD.toLocaleString('de-DE')} 💰</button>
+                <button id="tv-sendlf" title="Jetzt einmalig an alle offenen Verbandseinsätze je 1 LF senden" style="flex:1;padding:7px 10px;background:#f38ba8;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Jetzt senden (alle offenen)</button>
                 <button id="tv-auto" title="Automatik: alle 3 Minuten aktualisieren und ohne Rückfrage je 1 LF senden" style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;">🤖 Auto</button>
                 <button id="tv-city" title="Innenstadt-Leitstelle festlegen (deren LFs bleiben zu Hause). Shift+Klick = Sende-Protokoll herunterladen (zeigt, von welcher Wache jedes LF kam)." style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;background:#45475a;color:#cdd6f4;">🏙</button>
                 <button id="tv-exempt" title="Ausnahme-Leitstelle festlegen: EINZIGE Quelle für Verbandseinsätze – nur deren LFs werden alarmiert (z.B. Leitstelle Essen). Keine 35er-Reserve mehr." style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;background:#45475a;color:#cdd6f4;">🔓</button>
