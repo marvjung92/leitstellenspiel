@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Auto-Dispatch (ELW + Fahrzeuge + Patiententransport)
 // @namespace    marvin.lss.tools
-// @version      5.72
+// @version      5.73
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-auto-dispatch-v4.user.js
 // @description  ELW-Erstalarmierung, fehlende Fahrzeuge nachalarmieren, Funk abarbeiten, Patiententransporte – Debug-Logging und Log-Export. Log-/Audit-Speicher mit Verified-Write (Safari-Quota-sicher), kürzt statt löscht, meldet Kürzungen sichtbar im Panel. 🔍 Speicher-Diagnose + 🧹 LSSM-Cache-Leeren-Button. Live-Fortschritt im Status. Neu: Anforderungen (Fahrzeuge/Personal/Wasser/Pumpenleistung/Gefangenentransport) primär aus dem strukturierten Karten-Feed (mission_markers_own) statt fragilem HTML-Regex, mit DOM-Fallback.
@@ -16,7 +16,7 @@
 
     // Einzige Quelle für die Versionsanzeige (Panel-Titel + Startmeldung) – muss zum
     // @version-Header oben passen, sonst laufen beide bei künftigen Bumps wieder auseinander.
-    const SCRIPT_VERSION = '5.72';
+    const SCRIPT_VERSION = '5.73';
 
     // ===================== Konfiguration =====================
     const CONFIG = {
@@ -639,6 +639,24 @@
             lines.push('  Wachen, deren Fahrzeuge am häufigsten weit fahren (Zubau-Kandidaten in deren Umgebung prüfen):');
             for (const [name, w] of slowB) lines.push(`    ${name}: ${w.slow}× Langläufer bei ${w.n} Alarmierungen (ø ${fmtEta(w.sum / w.n)})`);
         }
+        // Standort-Kandidaten (v5.73): Ziel-Verstöße nach Gegend (Adresse ohne Straße/Hausnummer)
+        // + Fahrzeugtyp gruppiert – häufige Treffer in derselben Gegend sind der stärkste Beleg,
+        // dass dort eine Wache mit diesem Typ fehlt. Direkter als die reine Chronik weiter unten.
+        const areaMap = new Map();
+        for (const e of (travelStats.worst || [])) {
+            if (!e.addr) continue;
+            const parts = e.addr.split(',').map(s => s.trim());
+            const area = parts.length > 1 ? parts.slice(1).join(', ') : parts[0];
+            const key = `${e.typeId}|${area}`;
+            const c = areaMap.get(key) || { typeId: e.typeId, area, count: 0, etaSum: 0 };
+            c.count++; c.etaSum += e.eta;
+            areaMap.set(key, c);
+        }
+        const clusters = [...areaMap.values()].filter(c => c.count >= 2).sort((a, b) => b.count - a.count).slice(0, 12);
+        if (clusters.length) {
+            lines.push('  📍 Standort-Kandidaten (Ziel-Verstöße nach Gegend + Typ gruppiert, min. 2×):');
+            for (const c of clusters) lines.push(`    ${c.area}: ${vtName(c.typeId)} ${c.count}× Ziel verfehlt (ø ${fmtEta(c.etaSum / c.count)}) → hier fehlt eine Wache mit diesem Typ`);
+        }
         const worst = (travelStats.worst || []).slice(-30).reverse();
         if (worst.length) {
             lines.push(`  🚨 Bau-Liste: Ziel-Verstöße >${Math.round((CONFIG.travelGoalSec || 1800) / 60)} min (neueste zuerst, max. 30):`);
@@ -658,6 +676,31 @@
             for (const d of durs) lines.push(`    ${d.cap}: ø ${fmtDur(d.avg)}, max ${fmtDur(d.max)}, ${d.n}×`);
         }
         return lines;
+    }
+    function exportTravelReport() {
+        const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+        const header = [
+            'LSS Auto-Dispatch – Fahrzeit-/Standort-Report',
+            'Erstellt am: ' + new Date().toLocaleString('de-DE'),
+            'Frage: Wo lohnt sich der Bau einer neuen Wache (bzw. eines Fahrzeugtyps an einem Standort)?',
+            '',
+            'Lesehilfe:',
+            '  • "Ziel verfehlt" = Anfahrt über 30 min (CONFIG.travelGoalSec).',
+            '  • "Standort-Kandidaten" gruppiert diese Verstöße nach Gegend + Fahrzeugtyp –',
+            '    häufige Treffer in derselben Gegend sind der stärkste Beleg für einen Zubau dort.',
+            '  • "Bau-Liste" ist dieselben Daten ungruppiert, chronologisch (max. 30, neueste zuerst).',
+            '='.repeat(64),
+            ''
+        ];
+        const body = header.concat(travelReport()).join('\n') + '\n';
+        const blob = new Blob([body], { type: 'text/plain' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `lss-standort-report_${stamp}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+        log('📍 Standort-Report als Datei gespeichert', '#89b4fa');
     }
     // Reload-fest: State aus localStorage wiederherstellen (sonst vergisst die
     // Über-Alarmierungs-Bremse bei jedem Script-Update, was schon unterwegs ist)
@@ -1037,7 +1080,7 @@
             <button id="ad-audit" title="Über-Alarmierung auswerten: schicke ich zu viele Fahrzeuge? (wertet die [AUDIT]-Zeilen aus)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">📊 Audit</button>
             <button id="ad-audit-file" title="Audit-Zusammenfassung als lesbare .txt-Datei speichern (volle Historie, überlebt Reloads)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">📊 Audit-Datei</button>
             <button id="ad-audit-clear" title="Audit-Speicher leeren (alle [AUDIT]-Zeilen verwerfen – z.B. für eine frische Vorher/Nachher-Messung)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">📊🗑</button>
-            <button id="ad-travel" title="Fahrzeit-Report: ø/max Anfahrt je Fahrzeugtyp und auffällige Wachen (Shift+Klick = Statistik zurücksetzen)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🚗 Fahrzeiten</button>
+            <button id="ad-travel" title="Fahrzeit-Report: ø/max Anfahrt je Fahrzeugtyp, auffällige Wachen + Standort-Kandidaten für neue Wachen (Strg/Cmd+Klick = als Datei exportieren, Shift+Klick = Statistik zurücksetzen)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🚗 Fahrzeiten</button>
             <button id="ad-mbl" title="Manuelle Fahrzeug-Sperrliste: diese Fahrzeug-IDs werden von Auto-Dispatch UND Top-Verband nie alarmiert (z.B. personalstarke Fahrzeuge für die Wache)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🚫 Sperrliste</button>
             <button id="ad-city" title="Nur-Innenstadt-Modus: eigene Einsätze werden NUR mit Fahrzeugen der Innenstadt-Leitstelle bedient. Klick = an/aus, Shift+Klick = Leitstellen-ID(s) eintragen." style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">🏙 Nur City</button>
             <button id="ad-file" title="Logdatei wählen, in die fortlaufend geschrieben wird (nur Chrome/Edge)" style="cursor:pointer;border:1px solid #45475a;border-radius:4px;padding:1px 7px;background:#313244;color:#cdd6f4;">📁 Datei</button>
@@ -1222,6 +1265,7 @@
             log('🚗 Fahrzeit- und Einsatzdauer-Statistik zurückgesetzt – Messung beginnt frisch', '#f9e2af');
             return;
         }
+        if (e.ctrlKey || e.metaKey) { exportTravelReport(); return; }
         for (const line of travelReport()) log(line, '#89b4fa');
     });
     panel.querySelector('#ad-audit-clear').addEventListener('click', () => {
