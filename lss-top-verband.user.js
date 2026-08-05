@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.74
+// @version      1.75
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
-// @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 3 min) je 1 LF an alle über 4.999, mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
+// @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 30s) je 1 LF an ALLE offenen (kein Credit-Limit mehr), mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
 // @match        https://www.leitstellenspiel.de/
 // @match        https://www.leitstellenspiel.de/?*
 // @grant        none
@@ -16,7 +16,7 @@
 
     // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
-    const SCRIPT_VERSION = '1.74';
+    const SCRIPT_VERSION = '1.75';
 
     const LF_TYPE_IDS = [0, 1, 6, 7, 8, 30];  // alle LF-Varianten (LF, HLF, TLF, …) – identisch zum Dispatch-Script
     const SEND_DELAY = 800;                   // ms Pause zwischen zwei Alarmierungen (gegen Rate-Limit)
@@ -139,9 +139,9 @@
     }
 
     // Im Verbandschat geteilte Einsätze (v1.54): Links auf /missions/<id> aus #mission_chat_messages.
-    // Diese bekommen ihr LF UNABHÄNGIG von Credits-Schwelle und dynamischer Leiter – Verbands-Etikette.
-    // Nur Nachrichten der letzten CHAT_MAX_AGE_H Stunden; gesendet wird ohnehin nur, wenn der Einsatz
-    // noch offen in der Sidebar steht (alte/erledigte Links laufen also ins Leere, ohne Fehler).
+    // Werden in der Ziel-Sortierung vorgezogen (Verbands-Etikette). Nur Nachrichten der letzten
+    // CHAT_MAX_AGE_H Stunden; gesendet wird ohnehin nur, wenn der Einsatz noch offen in der
+    // Sidebar steht (alte/erledigte Links laufen also ins Leere, ohne Fehler).
     const CHAT_MAX_AGE_H = 12;
     function collectChatMissionIds() {
         const ids = new Set();
