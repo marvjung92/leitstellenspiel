@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Top-Verband-Einsätze
 // @namespace    http://tampermonkey.net/
-// @version      1.75
+// @version      1.76
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-top-verband.user.js
 // @description  Listet freigegebene/Verband-Einsätze, sendet per Knopf oder Automatik (alle 30s) je 1 LF an ALLE offenen (kein Credit-Limit mehr), mit 24h-Doppelsende-Schutz und Anfahr-Zähler. LFs kommen AUSSCHLIESSLICH aus der 🔓 Ausnahme-Leitstelle (z.B. Leitstelle Essen) – keine 35er-Reserve mehr. Fahrzeuge, die 3× nicht losfahren, werden gesperrt und per API auf FMS 6 gesetzt.
@@ -16,7 +16,7 @@
 
     // Bei JEDEM Versions-Bump auch hier + den @version-Header oben anpassen, sonst laufen beide
     // bei künftigen Bumps wieder auseinander (Panel würde eine veraltete Version anzeigen).
-    const SCRIPT_VERSION = '1.75';
+    const SCRIPT_VERSION = '1.76';
 
     const LF_TYPE_IDS = [0, 1, 6, 7, 8, 30];  // alle LF-Varianten (LF, HLF, TLF, …) – identisch zum Dispatch-Script
     const SEND_DELAY = 800;                   // ms Pause zwischen zwei Alarmierungen (gegen Rate-Limit)
@@ -155,6 +155,16 @@
             }
         }
         return ids;
+    }
+
+    // Einsatzadresse aus der Sidebar (kein Extra-Request nötig, steht schon im DOM) – für die
+    // Gegend-Auswertung im Sende-Protokoll (siehe downloadSendLog).
+    function getMissionAddress(missionId) {
+        try {
+            const small = document.querySelector(`#mission_caption_${missionId} small`);
+            if (small) return small.textContent.replace(/\s+/g, ' ').trim().replace(/,\s*$/, '');
+        } catch (e) { /* egal */ }
+        return null;
     }
 
     // Einen Einsatz als "freigegeben/Verband" einstufen:
@@ -298,20 +308,58 @@
         const n = (building || '').toLowerCase();
         return cfg.names.some(x => x && n.includes(x));
     }
+    // Gegend aus einer Einsatzadresse ohne Straße/Hausnummer (gleiche Heuristik wie im
+    // Auto-Dispatch-Skript): "Straße 12, PLZ Ort, Stadtteil" -> "PLZ Ort, Stadtteil".
+    function addressArea(addr) {
+        if (!addr) return null;
+        const parts = addr.split(',').map(s => s.trim());
+        return parts.length > 1 ? parts.slice(1).join(', ') : parts[0];
+    }
     function downloadSendLog() {
         const cfg = cityConfig();
         const cityHits = sendLog.filter(e => e.building && (isCityName(e.building, cfg))).length;
         const lines = [];
-        lines.push(`Top-Verband – Innenstadt-Sende-Protokoll – ${new Date().toLocaleString('de-DE')}`);
-        lines.push(`Leitstelle(n): ${cfg.leitstellen.join(', ') || '—'} | erkannte Gebäude: ${cityBuildingIds.size}`);
+        lines.push(`Top-Verband – Sende-Protokoll – ${new Date().toLocaleString('de-DE')}`);
+        lines.push(`Leitstelle(n) (Innenstadt-Sperre): ${cfg.leitstellen.join(', ') || '—'} | erkannte Gebäude: ${cityBuildingIds.size}`);
         lines.push(`Sendungen: ${sendLog.length} | LF von Innenstadt-Wache (Namensheuristik): ${cityHits} | übersprungene Innenstadt-LF gesamt: ${sendLog.reduce((s,e)=>s+(e.citySkipped||0),0)}`);
         lines.push('');
+
+        // Gegend-Häufung bei "kein LF frei" – zeigt, wo Verbandseinsätze entstehen, die Essen
+        // aktuell NICHT mehr abdecken kann (Kapazitätsmangel, keine Entfernungsfrage – Top-Verband
+        // prüft keine Distanz). Häuft sich eine Gegend, ist das ein Beleg für mehr LF-Bedarf.
+        const noLfAreas = new Map();
+        for (const e of sendLog) {
+            if (!e.noLf) continue;
+            const area = addressArea(e.addr);
+            if (!area) continue;
+            noLfAreas.set(area, (noLfAreas.get(area) || 0) + 1);
+        }
+        const noLfRanked = [...noLfAreas.entries()].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 15);
+        if (noLfRanked.length) {
+            lines.push('=== Gegenden mit häufig "kein LF frei" (min. 2×) ===');
+            for (const [area, n] of noLfRanked) lines.push(`  ${area}: ${n}×`);
+            lines.push('');
+        }
+
+        // Essen-Wachen-Auslastung: welche Wache liefert am meisten/wenigsten LF für Verbandseinsätze?
+        const byBuilding = new Map();
+        for (const e of sendLog) {
+            if (e.noLf || !e.building) continue;
+            byBuilding.set(e.building, (byBuilding.get(e.building) || 0) + 1);
+        }
+        const buildingRanked = [...byBuilding.entries()].sort((a, b) => b[1] - a[1]);
+        if (buildingRanked.length) {
+            lines.push('=== Essen-Wachen-Auslastung (LF für Verbandseinsätze, absteigend) ===');
+            for (const [building, n] of buildingRanked) lines.push(`  ${building}: ${n}×`);
+            lines.push('');
+        }
+
         lines.push('=== Sendungen (neueste zuerst) ===');
         for (const e of [...sendLog].reverse()) {
             const when = new Date(e.ts).toLocaleString('de-DE', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
             lines.push(e.noLf
-                ? `${when} #${e.id} "${e.name}"${e.fromChat?' [Chat]':''}: KEIN LF${e.citySkipped?` – ${e.citySkipped} Innenstadt übersprungen`:''}`
-                : `${when} #${e.id} "${e.name}"${e.fromChat?' [Chat]':''}: LF von "${e.building||'?'}"${e.citySkipped?` (${e.citySkipped} Innenstadt übersprungen)`:''}`);
+                ? `${when} #${e.id} "${e.name}"${e.fromChat?' [Chat]':''}: KEIN LF${e.addr?`, ${e.addr}`:''}${e.citySkipped?` – ${e.citySkipped} Innenstadt übersprungen`:''}`
+                : `${when} #${e.id} "${e.name}"${e.fromChat?' [Chat]':''}: LF von "${e.building||'?'}"${e.addr?`, ${e.addr}`:''}${e.citySkipped?` (${e.citySkipped} Innenstadt übersprungen)`:''}`);
         }
         const blob = new Blob([lines.join('\n')], { type:'text/plain;charset=utf-8' });
         const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -641,7 +689,7 @@
                 const { token, lfId, lfBuilding, citySkipped } = await findFreeLf(m.id);
                 if (!lfId) {
                     noLf++;
-                    recordCitySkip({ id: m.id, name: m.name, building: null, citySkipped, noLf: true, fromChat: !!m.fromChat });
+                    recordCitySkip({ id: m.id, name: m.name, building: null, citySkipped, noLf: true, fromChat: !!m.fromChat, addr: getMissionAddress(m.id) });
                     continue;
                 }
                 const body = new URLSearchParams();
@@ -677,7 +725,7 @@
                 }
                 markSent(m.id);
                 sent++;
-                recordCitySkip({ id: m.id, name: m.name, building: lfBuilding, citySkipped, noLf: false, fromChat: !!m.fromChat });
+                recordCitySkip({ id: m.id, name: m.name, building: lfBuilding, citySkipped, noLf: false, fromChat: !!m.fromChat, addr: getMissionAddress(m.id) });
                 if (onSend) onSend({ id: m.id, name: m.name, lfId, lfBuilding, confirmed });
             } catch (e) {
                 err++;
@@ -841,7 +889,7 @@
             <div style="display:flex;gap:6px;margin-bottom:8px;">
                 <button id="tv-sendlf" title="Jetzt einmalig an alle offenen Verbandseinsätze je 1 LF senden" style="flex:1;padding:7px 10px;background:#f38ba8;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Jetzt senden (alle offenen)</button>
                 <button id="tv-auto" title="Automatik: alle 3 Minuten aktualisieren und ohne Rückfrage je 1 LF senden" style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;">🤖 Auto</button>
-                <button id="tv-city" title="Innenstadt-Leitstelle festlegen (deren LFs bleiben zu Hause). Shift+Klick = Sende-Protokoll herunterladen (zeigt, von welcher Wache jedes LF kam)." style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;background:#45475a;color:#cdd6f4;">🏙</button>
+                <button id="tv-city" title="Innenstadt-Leitstelle festlegen (deren LFs bleiben zu Hause). Shift+Klick = Sende-Protokoll herunterladen (Wache je LF, Essen-Wachen-Auslastung, Gegenden mit häufig 'kein LF frei')." style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;background:#45475a;color:#cdd6f4;">🏙</button>
                 <button id="tv-exempt" title="Ausnahme-Leitstelle festlegen: EINZIGE Quelle für Verbandseinsätze – nur deren LFs werden alarmiert (z.B. Leitstelle Essen). Keine 35er-Reserve mehr." style="padding:7px 10px;border:none;border-radius:6px;font-weight:600;cursor:pointer;white-space:nowrap;background:#45475a;color:#cdd6f4;">🔓</button>
             </div>
             <div id="tv-result" style="overflow:auto;flex:1;"></div>
