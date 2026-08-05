@@ -617,10 +617,10 @@
         if (cityConfig().leitstellen.length && !cityBuildingIds.size) await refreshCityBuildings(true);
         const exCfg = exemptConfig();
         if (!exCfg.leitstellen.length) {
-            return { sent: 0, noLf: 0, err: 0, aborted: false, alreadyBound: 0, held: 0, noExemptConfigured: true };
+            return { sent: 0, noLf: 0, err: 0, aborted: false, alreadyBound: 0, noExemptConfigured: true };
         }
         if (!exemptBuildingIds.size) await refreshExemptBuildings(true);
-        let sent = 0, noLf = 0, err = 0, aborted = false, alreadyBound = 0, held = 0;
+        let sent = 0, noLf = 0, err = 0, aborted = false, alreadyBound = 0;
         if (onProgress) onProgress('Prüfe laufende Einsätze…');
         const state = await fetchLfState(); // null = API nicht verfügbar
         const boundIds = state ? state.boundIds : null;
@@ -630,15 +630,6 @@
                 markSent(m.id); // Serverwahrheit ins lokale 24h-Gedächtnis übernehmen
                 alreadyBound++;
                 continue;
-            }
-            // Ziele sind nach Verdienst absteigend sortiert (Chat-Ziele stehen vorn, Einsätze ohne
-            // lesbaren Ø-Wert (-1) ganz hinten) -> beim ersten Nicht-Chat-/Nicht-Unbekannt-Ziel
-            // unterhalb der Basis-Schwelle kann abgebrochen werden. Einsätze ohne Ø-Wert werden
-            // IMMER versucht, da sich ihr Verdienst gar nicht gegen die Schwelle prüfen lässt.
-            const belowThreshold = !m.fromChat && m.credits !== -1 && m.credits <= CREDIT_THRESHOLD;
-            if (belowThreshold) {
-                held = targets.length - i;
-                break;
             }
             if (onProgress) onProgress(`Sende… (${i + 1}/${targets.length}) – #${m.id}`);
             try {
@@ -779,11 +770,9 @@
         }
 
         const noValue = list.filter(m => m.credits < 0).length;
-        const overThreshold = list.filter(m => m.credits > CREDIT_THRESHOLD || m.credits === -1); // ohne Ø-Wert = immer Ziel
-        const targets = overThreshold.filter(m => !isSent(m.id));   // echte Button-Ziele (noch nicht in 24h gesendet)
-        const alreadyDone = overThreshold.filter(m => isSent(m.id)); // über Schwelle, aber in 24h schon angefahren
-        const below = list.filter(m => m.credits <= CREDIT_THRESHOLD && m.credits !== -1).slice(0, TOP_N);
-        const shown = [...targets, ...alreadyDone, ...below]; // Ziele zuerst, dann erledigte, dann Kontext
+        const targets = list.filter(m => !isSent(m.id));      // alle offenen Verbandseinsätze, noch nicht in 24h gesendet
+        const alreadyDone = list.filter(m => isSent(m.id));   // in 24h schon angefahren
+        const shown = [...targets, ...alreadyDone]; // Ziele zuerst, dann erledigte
 
         if (!lssmSeen) {
             $status.innerHTML = `<span style="color:#f9e2af;">${list.length} freigegebene Einsätze gefunden, aber kein Verdienst-Wert lesbar.</span> Ist im LSSM-Addon die „Ø Credits"-Spalte in der Einsatzliste aktiv?` + exemptLine;
@@ -794,25 +783,24 @@
             const cityWarn = cityCfgNow.leitstellen.length && !cityBuildingIds.size;
             const doneCount = Object.keys(sentStore).length; // alle in den letzten 24 h angefahrenen Verbandseinsätze
             const activeNow = countActiveLfEngagements();     // davon noch offen -> LF aktuell gebunden
-            $status.innerHTML = `<b style="color:#f38ba8;">${targets.length}</b> über ${CREDIT_THRESHOLD.toLocaleString('de-DE')} 💰 offen`
+            $status.innerHTML = `<b style="color:#f38ba8;">${targets.length}</b> offene Verbandseinsätze`
                 + ` · <b style="color:#89b4fa;" title="Offene Verbandseinsätze, die in den letzten 24 h ein eigenes LF bekommen haben – das LF ist dort unterwegs oder vor Ort gebunden">🚒 ${activeNow} LF aktuell gebunden</b>`
-                + (chatOpen ? ` · <b style="color:#fab387;" title="Im Verbandschat geteilte Einsätze ohne eigenes LF – werden unabhängig von der Credits-Schwelle angefahren">💬 ${chatOpen} Chat-Einsätze offen</b>` : '')
+                + (chatOpen ? ` · <b style="color:#fab387;" title="Im Verbandschat geteilte Einsätze ohne eigenes LF">💬 ${chatOpen} Chat-Einsätze offen</b>` : '')
                 + ` · <b style="color:#a6e3a1;">${doneCount} angefahren (24 h)</b>`
                 + ` · ${autoMode ? `<span style="color:#a6e3a1;">Automatik AN${lastAutoStamp ? ` (zuletzt ${lastAutoStamp})` : ''}</span>` : '<span style="color:#9399b2;">Automatik aus</span>'}`
-                + (noValue ? `<br><span style="color:#f9e2af;" title="Diese Verbandseinsätze haben keinen lesbaren Ø-Credits-Wert (LSSM) – werden deshalb IMMER angefahren, unabhängig von der Schwelle">⚠️ ${noValue} Verbandseinsatz${noValue > 1 ? 'e' : ''} ohne Ø-Wert – werden trotzdem angefahren</span>` : '')
+                + (noValue ? `<br><span style="color:#f9e2af;" title="Diese Verbandseinsätze haben keinen lesbaren Ø-Credits-Wert (LSSM), werden aber genauso angefahren">⚠️ ${noValue} Verbandseinsatz${noValue > 1 ? 'e' : ''} ohne Ø-Wert</span>` : '')
                 + exemptLine;
         }
 
         let html = '';
         shown.forEach((m) => {
-            const over = m.credits > CREDIT_THRESHOLD || m.credits === -1;
-            const done = over && isSent(m.id);
-            const target = over && !done;
+            const done = isSent(m.id);
+            const target = !done;
             const credTxt = m.credits >= 0 ? (m.approx ? '≈ ' : '') + m.credits.toLocaleString('de-DE') + ' 💰' : '– kein Wert –';
-            const icon = done ? '✓' : (target ? '🚒' : '·');
-            const rowBg = target ? 'background:rgba(243,139,168,.10);' : (done ? 'opacity:.55;' : '');
-            const credColor = target ? '#f38ba8' : (done ? '#9399b2' : '#a6e3a1');
-            const sub = done ? ' · in 24 h schon angefahren' : (target ? ' · Button-Ziel' : '');
+            const icon = done ? '✓' : '🚒';
+            const rowBg = target ? 'background:rgba(243,139,168,.10);' : 'opacity:.55;';
+            const credColor = target ? '#f38ba8' : '#9399b2';
+            const sub = done ? ' · in 24 h schon angefahren' : ' · Button-Ziel';
             html += `<div class="tv-row" data-id="${m.id}" style="display:flex;align-items:center;gap:8px;padding:7px 6px;border-bottom:1px solid #313244;cursor:pointer;${rowBg}">
                 <div style="font-size:14px;min-width:18px;text-align:center;">${icon}</div>
                 <div style="flex:1;min-width:0;">
@@ -822,9 +810,6 @@
                 <div style="text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;color:${credColor};font-weight:600;">${credTxt}</div>
             </div>`;
         });
-        if (targets.length > 0 && below.length > 0) {
-            html += `<div style="color:#9399b2;font-size:10px;padding:6px;">↑ 🚒 = Ziel des Sende-Buttons (über ${CREDIT_THRESHOLD.toLocaleString('de-DE')}). ✓ = in 24 h schon angefahren. Darunter: nächstgrößte zur Info.</div>`;
-        }
         $result.innerHTML = html;
         $result.querySelectorAll('.tv-row').forEach(row => {
             const baseBg = row.style.background;
