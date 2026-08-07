@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Zellen-Übersicht (Polizeiwachen)
 // @namespace    http://tampermonkey.net/
-// @version      1.09
+// @version      1.10
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-zellen-uebersicht.user.js
 // @description  Zeigt pro Wache die Erweiterungen (Polizei, Feuerwehr, THW, BePol, SEG, Krankenhaus). Polizei zusätzlich mit Zellen-Zählung. Update-Filter blendet Wachen aus, die eine gewählte Erweiterung schon haben. Aus /api/buildings + Wachenseite.
@@ -333,9 +333,18 @@
                 if (box.getAttribute('data-loaded')) return;
                 box.innerHTML = '<span style="color:#9399b2;font-size:11px;">lade Erweiterungen…</span>';
                 try {
-                    const exts = await loadExtensions(id);
+                    const allExts = await loadExtensions(id);
                     box.setAttribute('data-loaded', '1');
-                    if (!exts.length) { box.innerHTML = '<span style="color:#9399b2;font-size:11px;">Keine baubaren Erweiterungen (alles ausgebaut).</span>'; return; }
+                    // Bei aktivem Update-Filter nur die gefilterte Erweiterung zeigen, nicht alle
+                    // fehlenden – der Filter fragt ja gezielt nach genau dieser einen.
+                    const activeFilter = panel.querySelector('#zl-filter-select')?.value || '';
+                    const exts = activeFilter ? allExts.filter(e => e.name === activeFilter) : allExts;
+                    if (!exts.length) {
+                        box.innerHTML = activeFilter
+                            ? `<span style="color:#9399b2;font-size:11px;">„${activeFilter}" ist hier nicht (mehr) baubar.</span>`
+                            : '<span style="color:#9399b2;font-size:11px;">Keine baubaren Erweiterungen (alles ausgebaut).</span>';
+                        return;
+                    }
                     box.innerHTML = exts.map(e => `
                         <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;">
                             <span style="font-size:12px;">${e.name}</span>
