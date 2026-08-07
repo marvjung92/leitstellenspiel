@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Status 6 (nicht einsatzbereit) + Lehrgangs-Check
 // @namespace    http://tampermonkey.net/
-// @version      1.04
+// @version      1.05
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-status6.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-status6.user.js
 // @description  Listet alle Fahrzeuge im FMS-Status 6 (nicht einsatzbereit) und zeigt pro Fahrzeug den Grund (kein Personal / Personal ohne Lehrgang / anderer) sowie den Lehrgangs-Abgleich des zugewiesenen Personals. Neu: 🔧 Automatisch beheben – weist fehlendes Personal (nur wirklich freie Personen, nie von anderen Fahrzeugen abgezogen) automatisch zu und setzt einsatzbereite Fahrzeuge per API auf FMS 2. Alle Aktionen landen im 📋 Protokoll.
@@ -244,9 +244,24 @@
             if (/btn-assigned/i.test(rowHtml)) kind = 'here';
             else if (/btn-warning/i.test(rowHtml)) kind = 'elsewhere';
             else if (/btn-success/i.test(rowHtml)) kind = 'free';
-            rows.push({ personalId, name, filterableBy, kind });
+            // Physischer Aufenthalt (Status-Spalte) getrennt von der Roster-Zuweisung ("Zugewiesen
+            // an"): "Verfügbar" -> physicallyAt=null, "Im Fahrzeug: X" -> physicallyAt=Fahrzeug-ID.
+            // Verifiziert (Beleg #124398995): eine Person kann diesem Fahrzeug zugewiesen sein
+            // (kind='here'), aber gerade physisch in einem KOMPLETT ANDEREN Fahrzeug sitzen –
+            // dann ist das Fahrzeug NICHT wirklich crewed, egal was der Roster-Zähler sagt.
+            const inVehicleMatch = rowHtml.match(/Im Fahrzeug:\s*<a href="\/vehicles\/(\d+)"/i);
+            const physicallyAt = inVehicleMatch ? inVehicleMatch[1] : null;
+            rows.push({ personalId, name, filterableBy, kind, physicallyAt });
         }
         return rows;
+    }
+
+    // Hat dieses Fahrzeug mindestens eine ihm zugewiesene Person, die auch WIRKLICH da ist
+    // (frei/"Verfügbar" oder physisch in genau diesem Fahrzeug) – nicht nur auf dem Papier?
+    function hasPresentCrew(rows, vehicleId) {
+        const here = rows.filter(r => r.kind === 'here');
+        if (!here.length) return false;
+        return here.some(r => r.physicallyAt === null || r.physicallyAt === String(vehicleId));
     }
 
     // Toggelt die Zuweisung (POST, kein Body – identisch zum jQuery-Aufruf im Spiel selbst).
@@ -299,7 +314,7 @@
     async function autoFixVehicle(v) {
         const res = await fetch(`/vehicles/${v.id}/zuweisung`, { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) { logAction({ vehicleId: v.id, name: v.name, building: v.building, text: `Zuweisungsseite nicht ladbar (HTTP ${res.status})` }); return; }
-        const html = await res.text();
+        let html = await res.text();
         let a = analyzeAssignment(html);
         results[v.id] = { ...a, name: v.name, building: v.building, ts: Date.now() };
 
@@ -344,16 +359,23 @@
         if (changed) {
             const res2 = await fetch(`/vehicles/${v.id}/zuweisung`, { credentials: 'same-origin', cache: 'no-store' });
             if (res2.ok) {
-                a = analyzeAssignment(await res2.text());
+                html = await res2.text();
+                a = analyzeAssignment(html);
                 results[v.id] = { ...a, name: v.name, building: v.building, ts: Date.now() };
             }
         }
         // "anderer Grund" = Skript kennt die echte Ursache nicht (evtl. Werkstatt/Defekt) –
         // laut Entscheidung trotzdem versuchen. Sonst nur zurücksetzen, wenn wirklich bereit.
-        const nowReady = a.reason === 'anderer' || (a.assigned > 0 && (!a.reqBlock || !a.anyUnmet));
-        if (nowReady) {
+        // ZUSÄTZLICH (Beleg #124398995): Roster-Zuweisung reicht NICHT – die zugewiesene Person
+        // muss auch wirklich da sein (frei oder physisch in genau diesem Fahrzeug), sonst ist
+        // das Fahrzeug trotz "1 Personal" nicht wirklich crewed.
+        const presumablyReady = a.reason === 'anderer' || (a.assigned > 0 && (!a.reqBlock || !a.anyUnmet));
+        const present = hasPresentCrew(parsePersonnelRows(html), v.id);
+        if (presumablyReady && present) {
             const ok = await setVehicleFms(v.id, 2);
             logAction({ vehicleId: v.id, name: v.name, building: v.building, text: ok ? '✅ FMS auf 2 gesetzt (einsatzbereit)' : '⚠️ FMS-2-Setzen fehlgeschlagen' });
+        } else if (presumablyReady && !present) {
+            logAction({ vehicleId: v.id, name: v.name, building: v.building, text: '⏸️ Personal zugewiesen, aber niemand vor Ort/frei (in anderem Fahrzeug gebunden) – FMS NICHT zurückgesetzt' });
         }
         persist();
     }
