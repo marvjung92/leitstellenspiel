@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LSS Status 6 (nicht einsatzbereit) + Lehrgangs-Check
 // @namespace    http://tampermonkey.net/
-// @version      1.03
+// @version      1.04
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-status6.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-status6.user.js
 // @description  Listet alle Fahrzeuge im FMS-Status 6 (nicht einsatzbereit) und zeigt pro Fahrzeug den Grund (kein Personal / Personal ohne Lehrgang / anderer) sowie den Lehrgangs-Abgleich des zugewiesenen Personals. Neu: 🔧 Automatisch beheben – weist fehlendes Personal (nur wirklich freie Personen, nie von anderen Fahrzeugen abgezogen) automatisch zu und setzt einsatzbereite Fahrzeuge per API auf FMS 2. Alle Aktionen landen im 📋 Protokoll.
@@ -197,9 +197,13 @@
     // Ursache vor Symptom: alle drei Bausteine unten sind gegen echtes HTML von
     // /vehicles/<id>/zuweisung verifiziert (Endpunkt, CSRF, Button-Klassen, Lehrgangs-Mapping).
 
+    // DOMParser statt Regex: die Attribut-Reihenfolge im <meta>-Tag ist nicht garantiert
+    // (verifiziert: hier stand "content" VOR "name") – DOMParser ist davon unabhängig.
     function getCsrfToken(html) {
-        const m = html.match(/<meta[^>]*name="csrf-token"[^>]*content="([^"]+)"/i);
-        return m ? m[1] : null;
+        try {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            return doc.querySelector('meta[name="csrf-token"]')?.content || null;
+        } catch (e) { return null; }
     }
 
     // Lehrgangs-Schlüssel <-> Klartext-Name aus dem "Lehrgangsfilter"-Dropdown der Fahrzeugseite
