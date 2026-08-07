@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Status 6 (nicht einsatzbereit) + Lehrgangs-Check
 // @namespace    http://tampermonkey.net/
-// @version      1.02
+// @version      1.03
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-status6.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-status6.user.js
-// @description  Listet alle Fahrzeuge im FMS-Status 6 (nicht einsatzbereit) und zeigt pro Fahrzeug den Grund (kein Personal / Personal ohne Lehrgang / anderer) sowie den Lehrgangs-Abgleich des zugewiesenen Personals.
+// @description  Listet alle Fahrzeuge im FMS-Status 6 (nicht einsatzbereit) und zeigt pro Fahrzeug den Grund (kein Personal / Personal ohne Lehrgang / anderer) sowie den Lehrgangs-Abgleich des zugewiesenen Personals. Neu: 🔧 Automatisch beheben – weist fehlendes Personal (nur wirklich freie Personen, nie von anderen Fahrzeugen abgezogen) automatisch zu und setzt einsatzbereite Fahrzeuge per API auf FMS 2. Alle Aktionen landen im 📋 Protokoll.
 // @match        https://www.leitstellenspiel.de/*
 // @grant        none
 // @run-at       document-idle
@@ -193,6 +193,185 @@
         return results[v.id];
     }
 
+    // ==== Automatische Behebung (v1.03) ====
+    // Ursache vor Symptom: alle drei Bausteine unten sind gegen echtes HTML von
+    // /vehicles/<id>/zuweisung verifiziert (Endpunkt, CSRF, Button-Klassen, Lehrgangs-Mapping).
+
+    function getCsrfToken(html) {
+        const m = html.match(/<meta[^>]*name="csrf-token"[^>]*content="([^"]+)"/i);
+        return m ? m[1] : null;
+    }
+
+    // Lehrgangs-Schlüssel <-> Klartext-Name aus dem "Lehrgangsfilter"-Dropdown der Fahrzeugseite
+    // (z.B. "disaster_response_technology" <-> "SEG - Technik und Sicherheit").
+    function parseEducationKeyMap(html) {
+        const map = {};
+        const sel = html.match(/<select[^>]*class="[^"]*education-filter[^"]*"[\s\S]*?<\/select>/i);
+        if (!sel) return map;
+        const re = /<option value="([^"]+)"[^>]*>([^<]+)<\/option>/gi;
+        let m;
+        while ((m = re.exec(sel[0])) !== null) {
+            const key = m[1], label = m[2].trim();
+            if (key === 'all' || key === 'no-education') continue;
+            map[label] = key;
+        }
+        return map;
+    }
+
+    // Personal-Tabelle: pro Zeile personalId, Name, Lehrgangs-Schlüssel + Zuweisungs-Zustand.
+    // WICHTIG: die "Status"-Spalte (Verfügbar/Im Fahrzeug) zeigt nur, ob die Person GERADE
+    // unterwegs ist – NICHT, wem sie zugewiesen ist. Nur die Button-Farbe ist verlässlich:
+    // 'free' (btn-success) = nirgends zugewiesen, sicher zu greifen.
+    // 'elsewhere' (btn-warning) = einem ANDEREN Fahrzeug zugewiesen – NIE anfassen (würde dort
+    //   ein neues Status-6-Problem erzeugen).
+    // 'here' (btn-assigned) = schon diesem Fahrzeug zugewiesen.
+    function parsePersonnelRows(html) {
+        const rows = [];
+        const re = /<tr id="personal_(\d+)" data-filterable-by="(\[[^\]]*\])"[^>]*>([\s\S]*?)<\/tr>/gi;
+        let m;
+        while ((m = re.exec(html)) !== null) {
+            const personalId = m[1];
+            let filterableBy = [];
+            try { filterableBy = JSON.parse(m[2].replace(/&quot;/g, '"')); } catch (e) { /* egal */ }
+            const rowHtml = m[3];
+            const nameMatch = rowHtml.match(/<td>([^<]*)<\/td>/);
+            const name = nameMatch ? nameMatch[1].trim() : `#${personalId}`;
+            let kind = 'unknown';
+            if (/btn-assigned/i.test(rowHtml)) kind = 'here';
+            else if (/btn-warning/i.test(rowHtml)) kind = 'elsewhere';
+            else if (/btn-success/i.test(rowHtml)) kind = 'free';
+            rows.push({ personalId, name, filterableBy, kind });
+        }
+        return rows;
+    }
+
+    // Toggelt die Zuweisung (POST, kein Body – identisch zum jQuery-Aufruf im Spiel selbst).
+    async function assignPersonnel(vehicleId, personalId, token) {
+        try {
+            const res = await fetch(`/vehicles/${vehicleId}/zuweisungDo/${personalId}`, {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': token || '', 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            return res.ok;
+        } catch (e) { return false; }
+    }
+
+    async function setVehicleFms(vehicleId, status) {
+        try {
+            const res = await fetch(`/vehicles/${vehicleId}/set_fms/${status}`, { credentials: 'same-origin' });
+            return res.ok;
+        } catch (e) { return false; }
+    }
+
+    // Automatisierungs-Protokoll (v1.03): jede Personal-Zuweisung + jedes FMS-Setzen wird
+    // protokolliert, damit man in der Einführungsphase nachvollziehen kann, was das Skript
+    // getan hat und ob dabei etwas Unerwartetes passiert ist.
+    const ALOG_KEY = 'status6_action_log';
+    let actionLog = [];
+    try { actionLog = JSON.parse(localStorage.getItem(ALOG_KEY) || '[]') || []; } catch (e) { actionLog = []; }
+    function logAction(entry) {
+        actionLog.push({ ts: Date.now(), ...entry });
+        if (actionLog.length > 500) actionLog = actionLog.slice(-500);
+        const payload = JSON.stringify(actionLog);
+        try { localStorage.setItem(ALOG_KEY, payload); if (localStorage.getItem(ALOG_KEY) === payload) return; } catch (e) { /* Quota? -> aufräumen */ }
+        for (const k of ['status6_buildings']) { try { localStorage.removeItem(k); } catch (x) {} }
+        try { localStorage.setItem(ALOG_KEY, payload); } catch (e) { /* egal, Log bleibt nur im Speicher dieser Sitzung */ }
+    }
+    function downloadActionLog() {
+        const lines = [`Status 6 – Automatisierungs-Protokoll – ${new Date().toLocaleString('de-DE')}`, `${actionLog.length} Einträge`, ''];
+        for (const e of [...actionLog].reverse()) {
+            const when = new Date(e.ts).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            lines.push(`${when} [#${e.vehicleId}] ${e.name || ''}${e.building ? ` (${e.building})` : ''}: ${e.text}`);
+        }
+        const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        a.download = `status6-protokoll_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.txt`;
+        a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+
+    // Kernlogik pro Fahrzeug: fehlendes Personal/Lehrgang mit freiem, passendem Personal
+    // auffüllen (nie 'elsewhere'-Personen abziehen!), danach neu prüfen und bei Bereitschaft
+    // (oder "anderer Grund" – Beschluss: auch dort versuchen) den FMS-Status auf 2 setzen.
+    async function autoFixVehicle(v) {
+        const res = await fetch(`/vehicles/${v.id}/zuweisung`, { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) { logAction({ vehicleId: v.id, name: v.name, building: v.building, text: `Zuweisungsseite nicht ladbar (HTTP ${res.status})` }); return; }
+        const html = await res.text();
+        let a = analyzeAssignment(html);
+        results[v.id] = { ...a, name: v.name, building: v.building, ts: Date.now() };
+
+        let changed = false;
+        if (a.reason === 'kein-personal' || a.reason === 'lehrgang-fehlt') {
+            const token = getCsrfToken(html);
+            const rows = parsePersonnelRows(html);
+            if (!a.reqBlock || !a.need.length) {
+                // Kein spezifischer Lehrgang nötig -> irgendeine wirklich freie Person reicht.
+                const cand = rows.find(r => r.kind === 'free');
+                if (cand) {
+                    const ok = await assignPersonnel(v.id, cand.personalId, token);
+                    logAction({ vehicleId: v.id, name: v.name, building: v.building, text: ok ? `Personal zugewiesen: ${cand.name}` : `Zuweisung fehlgeschlagen: ${cand.name}` });
+                    if (ok) changed = true;
+                } else {
+                    logAction({ vehicleId: v.id, name: v.name, building: v.building, text: 'kein freies Personal verfügbar' });
+                }
+            } else {
+                const eduMap = parseEducationKeyMap(html);
+                for (const n of a.need) {
+                    if (n.ok) continue;
+                    const key = eduMap[n.label];
+                    if (!key) {
+                        logAction({ vehicleId: v.id, name: v.name, building: v.building, text: `kein Personal mit Lehrgang "${n.label}" im Pool – Lehrgang muss erst gelernt werden` });
+                        continue;
+                    }
+                    const missing = n.req - n.have;
+                    const cands = rows.filter(r => r.kind === 'free' && r.filterableBy.includes(key)).slice(0, missing);
+                    if (!cands.length) {
+                        logAction({ vehicleId: v.id, name: v.name, building: v.building, text: `kein freies Personal mit Lehrgang "${n.label}" verfügbar` });
+                        continue;
+                    }
+                    for (const cand of cands) {
+                        const ok = await assignPersonnel(v.id, cand.personalId, token);
+                        logAction({ vehicleId: v.id, name: v.name, building: v.building, text: ok ? `Personal zugewiesen: ${cand.name} (${n.label})` : `Zuweisung fehlgeschlagen: ${cand.name}` });
+                        if (ok) changed = true;
+                    }
+                }
+            }
+        }
+
+        if (changed) {
+            const res2 = await fetch(`/vehicles/${v.id}/zuweisung`, { credentials: 'same-origin', cache: 'no-store' });
+            if (res2.ok) {
+                a = analyzeAssignment(await res2.text());
+                results[v.id] = { ...a, name: v.name, building: v.building, ts: Date.now() };
+            }
+        }
+        // "anderer Grund" = Skript kennt die echte Ursache nicht (evtl. Werkstatt/Defekt) –
+        // laut Entscheidung trotzdem versuchen. Sonst nur zurücksetzen, wenn wirklich bereit.
+        const nowReady = a.reason === 'anderer' || (a.assigned > 0 && (!a.reqBlock || !a.anyUnmet));
+        if (nowReady) {
+            const ok = await setVehicleFms(v.id, 2);
+            logAction({ vehicleId: v.id, name: v.name, building: v.building, text: ok ? '✅ FMS auf 2 gesetzt (einsatzbereit)' : '⚠️ FMS-2-Setzen fehlgeschlagen' });
+        }
+        persist();
+    }
+
+    let autoFixRunning = false;
+    async function autoFixAll(panel) {
+        if (autoFixRunning) return;
+        autoFixRunning = true;
+        const $status = panel.querySelector('#s6-status');
+        try {
+            const targets = lastList.filter(v => results[v.id]); // nur bereits geprüfte Fahrzeuge
+            let done = 0;
+            for (const v of targets) {
+                $status.innerHTML = `🔧 Automatik läuft… (${done + 1}/${targets.length}) – ${v.name}`;
+                try { await autoFixVehicle(v); } catch (e) { logAction({ vehicleId: v.id, name: v.name, building: v.building, text: `Fehler: ${e.message}` }); }
+                done++;
+                if (CONFIG.fetchDelayMs) await new Promise(r => setTimeout(r, CONFIG.fetchDelayMs));
+            }
+            await scan(panel); // neu laden – behobene Fahrzeuge (jetzt FMS 2) verschwinden aus der Liste
+        } finally { autoFixRunning = false; }
+    }
+
     const REASON_LABEL = {
         'kein-personal': { txt: 'kein Personal zugewiesen', col: '#f38ba8' },
         'lehrgang-fehlt': { txt: 'Personal ohne benötigten Lehrgang', col: '#fab387' },
@@ -302,6 +481,10 @@
                     <button id="s6-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
                 </div>
             </div>
+            <div style="display:flex;gap:4px;margin-bottom:6px;">
+                <button id="s6-autofix" title="Fehlendes Personal (nur wirklich freie Personen, nie von anderen Fahrzeugen abgezogen) auffüllen und einsatzbereite Fahrzeuge auf FMS 2 setzen" style="flex:1;padding:5px;background:#a6e3a1;color:#1e1e2e;border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;">🔧 Automatisch beheben</button>
+                <button id="s6-log" title="Automatisierungs-Protokoll herunterladen" style="padding:5px 9px;background:#45475a;color:#cdd6f4;border:none;border-radius:5px;font-size:12px;cursor:pointer;">📋</button>
+            </div>
             <div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;">
                 <button class="s6-f" data-r="all" style="flex:1;padding:4px;background:#89b4fa;color:#1e1e2e;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">Alle</button>
                 <button class="s6-f" data-r="kein-personal" style="flex:1;padding:4px;background:#45475a;color:#cdd6f4;border:none;border-radius:5px;font-size:11px;cursor:pointer;">Kein Personal</button>
@@ -310,11 +493,13 @@
             </div>
             <div id="s6-status" style="margin-bottom:6px;font-size:12px;">Bereit – „⟳ Prüfen" durchsucht die Fahrzeuge.</div>
             <div id="s6-list" style="overflow:auto;flex:1;"></div>
-            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Status 6 = nicht einsatzbereit. Grund: kein Personal, Personal ohne benötigten Lehrgang, oder anderer. 🎓 = jemand in Ausbildung. Klick öffnet die Zuweisung.</div>
+            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Status 6 = nicht einsatzbereit. Grund: kein Personal, Personal ohne benötigten Lehrgang, oder anderer. 🎓 = jemand in Ausbildung. Klick öffnet die Zuweisung. 🔧 weist nur nirgends zugewiesenes Personal zu und setzt danach FMS 2, wenn bereit.</div>
         `;
         document.body.appendChild(panel);
         panel.querySelector('#s6-close').onclick = () => panel.remove();
         panel.querySelector('#s6-scan').onclick = () => scan(panel);
+        panel.querySelector('#s6-autofix').onclick = () => autoFixAll(panel);
+        panel.querySelector('#s6-log').onclick = () => downloadActionLog();
         panel.querySelectorAll('.s6-f').forEach(btn => {
             btn.onclick = () => {
                 filterReason = btn.getAttribute('data-r');
