@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Essen LF-Auffüllung
 // @namespace    http://tampermonkey.net/
-// @version      1.00
+// @version      1.01
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-essen-lf-auffuellung.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-essen-lf-auffuellung.user.js
-// @description  Listet Feuerwachen einer konfigurierbaren Leitstelle (🔧-Button) mit weniger als 10 Fahrzeugen und Stufe ≥10, füllt sie per Knopfdruck mit LF 20 (Credits) bis auf 10 Fahrzeuge auf.
+// @description  Listet Feuerwachen einer konfigurierbaren Leitstelle (🔧-Button) mit weniger als 10 Fahrzeugen, füllt sie per Knopfdruck mit LF 20 (Credits) bis auf 10 Fahrzeuge auf. Wachen mit zu wenig Stellplatz werden dabei zuerst automatisch ausgebaut (Credits).
 // @match        https://www.leitstellenspiel.de/*
 // @grant        none
 // @run-at       document-idle
@@ -83,7 +83,6 @@
 
     const CONFIG = {
         targetVehicles: 10,   // Ziel-Fahrzeuganzahl je Wache
-        minLevel: 10,         // Stufe muss mindestens so hoch sein (genug Stellplätze)
         vehicleTypeId: 30,    // LF 20 – verifiziert aus dem Fahrzeugmarkt-Kauflink
         concurrency: 4,
         checkDelayMs: 200,    // Pause zwischen Wachen-Seitenabrufen (Prüfen)
@@ -137,7 +136,9 @@
 
     // Wachen-Seite selbst lesen: Stufe und "Fahrzeuge: X von maximal Y" stehen nur dort,
     // nicht in /api/buildings.
-    async function checkBuilding(id) {
+    // Liest Stufe + "Fahrzeuge: X von maximal Y" – die einzig verlässliche Quelle dafür, ob
+    // wirklich genug Stellplatz da ist (steht in keiner API, nur auf der Gebäudeseite selbst).
+    async function getLevelAndMax(id) {
         const res = await fetch(`/buildings/${id}`, { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) return null;
         const html = await res.text();
@@ -146,22 +147,34 @@
         const fzMatch = html.match(/Fahrzeuge:<\/strong><\/dt>\s*<dd>\s*(\d+)\s*von maximal\s*(\d+)/i);
         if (!stufeMatch || !fzMatch) return null;
         return {
-            id: String(id),
             name: nameMatch ? nameMatch[1].trim() : `#${id}`,
             level: parseInt(stufeMatch[1], 10),
             count: parseInt(fzMatch[1], 10),
             max: parseInt(fzMatch[2], 10),
         };
     }
+    async function checkBuilding(id) {
+        const r = await getLevelAndMax(id);
+        return r ? { id: String(id), ...r } : null;
+    }
 
-    // Kauf: einfacher GET-Link ohne data-method="post" (verifiziert aus dem Fahrzeugmarkt-HTML) –
-    // anders als Ausbau/Erweiterung auf derselben Gebäudeseite, die alle POST sind.
+    // Kauf: einfacher GET-Link ohne data-method="post" (verifiziert aus dem Fahrzeugmarkt-HTML).
     async function buyLf20(buildingId) {
         try {
             const res = await fetch(
                 `/buildings/${buildingId}/vehicle/${buildingId}/${CONFIG.vehicleTypeId}/credits?building=${buildingId}&return_tab=fire_engine`,
                 { credentials: 'same-origin' }
             );
+            return res.ok;
+        } catch (e) { return false; }
+    }
+
+    // Ausbau um genau eine Stufe (level -> level+1), Bezahlung mit Credits. Ebenfalls ein
+    // einfacher GET-Link ohne data-method="post" (verifiziert aus der /expand-Seite).
+    // "level" MUSS die AKTUELLE Stufe des Gebäudes sein, sonst schlägt der Aufruf fehl.
+    async function expandOneLevel(buildingId, currentLevel) {
+        try {
+            const res = await fetch(`/buildings/${buildingId}/expand_do/credits?level=${currentLevel}`, { credentials: 'same-origin' });
             return res.ok;
         } catch (e) { return false; }
     }
@@ -226,9 +239,13 @@
                 }
             }
             await Promise.all(Array.from({ length: CONFIG.concurrency }, worker));
+            // Ausschlaggebend ist "max" (echte Stellplatzzahl), nicht die Stufe direkt – robuster,
+            // falls eine Wache z.B. per Großwache-Erweiterung schon vor Stufe 10 genug Platz hat.
+            // Wachen mit zu wenig Stellplatz fallen NICHT mehr raus, sondern werden beim Auffüllen
+            // zuerst ausgebaut (🏗️-Kennzeichnung in der Liste).
             lastList = results
-                .filter(r => r.level >= CONFIG.minLevel && r.count < CONFIG.targetVehicles)
-                .sort((a, b) => a.count - b.count);
+                .filter(r => r.count < CONFIG.targetVehicles)
+                .sort((a, b) => (a.max - b.max) || (a.count - b.count));
             render(panel);
         } catch (e) {
             $status.innerHTML = `<span style="color:#f38ba8;">Fehler: ${e.message}</span>`;
@@ -238,16 +255,19 @@
     function render(panel) {
         const $status = panel.querySelector('#elf-status');
         const $list = panel.querySelector('#elf-list');
-        $status.innerHTML = `<b style="color:#f38ba8;">${lastList.length}</b> Feuerwache(n) mit &lt;${CONFIG.targetVehicles} Fahrzeugen (Stufe ≥ ${CONFIG.minLevel})`;
+        const needExpandCount = lastList.filter(b => b.max < CONFIG.targetVehicles).length;
+        $status.innerHTML = `<b style="color:#f38ba8;">${lastList.length}</b> Feuerwache(n) mit &lt;${CONFIG.targetVehicles} Fahrzeugen`
+            + (needExpandCount ? ` · <span style="color:#fab387;">🏗️ ${needExpandCount} davon zu wenig Stellplatz – wird beim Auffüllen zuerst ausgebaut</span>` : '');
         if (!lastList.length) {
             $list.innerHTML = '<div style="color:#9399b2;padding:8px;">Keine passenden Wachen gefunden – „⟳ Prüfen" starten.</div>';
             return;
         }
         let html = '';
         for (const b of lastList) {
+            const needsExpand = b.max < CONFIG.targetVehicles;
             html += `<div style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #313244;">
                 <a href="/buildings/${b.id}" style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#cdd6f4;">${b.name}</a>
-                <span style="color:#9399b2;font-size:11px;white-space:nowrap;">Stufe ${b.level} · ${b.count}/${b.max}</span>
+                <span style="color:${needsExpand ? '#fab387' : '#9399b2'};font-size:11px;white-space:nowrap;">${needsExpand ? '🏗️ ' : ''}Stufe ${b.level} · ${b.count}/${b.max}</span>
             </div>`;
         }
         $list.innerHTML = html;
@@ -257,14 +277,37 @@
     async function fillAll(panel) {
         if (fillRunning) return;
         if (!lastList.length) { window.alert('Erst „⟳ Prüfen" ausführen.'); return; }
-        const totalNeed = lastList.reduce((s, b) => s + (CONFIG.targetVehicles - b.count), 0);
-        if (!window.confirm(`${lastList.length} Wache(n) auf je ${CONFIG.targetVehicles} Fahrzeuge auffüllen – insgesamt ${totalNeed}× LF 20 kaufen (kostet Credits)?`)) return;
+        const needExpand = lastList.filter(b => b.max < CONFIG.targetVehicles);
+        const totalNeed = lastList.reduce((s, b) => s + Math.max(0, CONFIG.targetVehicles - b.count), 0);
+        const msg = `${lastList.length} Wache(n) auf je ${CONFIG.targetVehicles} Fahrzeuge auffüllen – insgesamt ~${totalNeed}× LF 20 kaufen (Credits).`
+            + (needExpand.length ? ` Davon ${needExpand.length} Wache(n) mit zu wenig Stellplatz – werden ZUERST ausgebaut (echte, teils hohe Zusatzkosten in Credits!). Fortfahren?` : ' Fortfahren?');
+        if (!window.confirm(msg)) return;
         fillRunning = true;
         const $status = panel.querySelector('#elf-status');
-        let bought = 0, failed = 0;
+        let bought = 0, expanded = 0, failed = 0, skipped = 0;
         try {
             for (const b of lastList) {
-                const need = CONFIG.targetVehicles - b.count;
+                let cur = { level: b.level, count: b.count, max: b.max };
+                // Erst ausbauen, bis genug Stellplatz da ist – Sicherheitsgrenze bei 19 Versuchen
+                // (höchste Stufe im Spiel), damit ein unerwarteter Zustand nicht in eine Endlosschleife läuft.
+                let guard = 0;
+                while (cur.max < CONFIG.targetVehicles && guard < 19) {
+                    $status.innerHTML = `🏗️ Baue aus… ${b.name} (Stufe ${cur.level} → ${cur.level + 1})`;
+                    const ok = await expandOneLevel(b.id, cur.level);
+                    await new Promise(r => setTimeout(r, CONFIG.buyDelayMs));
+                    const next = await getLevelAndMax(b.id);
+                    if (!next || next.level <= cur.level) {
+                        addLog({ buildingId: b.id, name: b.name, text: ok ? 'Ausbau angestoßen, aber Stufe unverändert (evtl. verzögert) – Wache übersprungen' : 'Ausbau fehlgeschlagen (Credits?) – Wache übersprungen' });
+                        cur = null;
+                        break;
+                    }
+                    addLog({ buildingId: b.id, name: b.name, text: `Ausgebaut auf Stufe ${next.level} (${next.count}/${next.max})` });
+                    expanded++;
+                    cur = next;
+                    guard++;
+                }
+                if (!cur || cur.max < CONFIG.targetVehicles) { skipped++; continue; }
+                const need = CONFIG.targetVehicles - cur.count;
                 for (let i = 0; i < need; i++) {
                     $status.innerHTML = `🚒 Kaufe für ${b.name}… (${i + 1}/${need})`;
                     const ok = await buyLf20(b.id);
@@ -273,7 +316,8 @@
                     await new Promise(r => setTimeout(r, CONFIG.buyDelayMs));
                 }
             }
-            $status.innerHTML = `✅ Fertig: ${bought} LF 20 gekauft${failed ? `, ${failed} Wache(n) mit Fehlschlag abgebrochen` : ''}.`;
+            $status.innerHTML = `✅ Fertig: ${expanded} Ausbau-Schritte, ${bought} LF 20 gekauft`
+                + (failed ? `, ${failed}× Kauf-Fehlschlag` : '') + (skipped ? `, ${skipped} Wache(n) ohne genug Platz übersprungen` : '') + '.';
         } finally {
             fillRunning = false;
             await scan(panel); // frisch neu prüfen – erledigte Wachen fallen aus der Liste
@@ -300,7 +344,7 @@
             <button id="elf-fill" title="Alle unten gelisteten Wachen auf ${CONFIG.targetVehicles} Fahrzeuge auffüllen" style="width:100%;padding:7px;margin-bottom:8px;background:#a6e3a1;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Alle auffüllen (LF 20, Credits)</button>
             <div id="elf-status" style="margin-bottom:6px;font-size:12px;">Bereit – „⟳ Prüfen" durchsucht die Feuerwachen.</div>
             <div id="elf-list" style="overflow:auto;flex:1;"></div>
-            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Nur Feuerwachen (building_type 0) der konfigurierten Leitstelle, Stufe ≥ ${CONFIG.minLevel} und &lt; ${CONFIG.targetVehicles} Fahrzeuge. Kauf ist ein echter Credits-Spend, kein Testmodus.</div>
+            <div style="color:#9399b2;font-size:10px;margin-top:8px;">Nur Feuerwachen (building_type 0) der konfigurierten Leitstelle mit &lt; ${CONFIG.targetVehicles} Fahrzeugen. 🏗️ = zu wenig Stellplatz, wird beim Auffüllen zuerst ausgebaut. Kauf/Ausbau sind echter Credits-Spend, kein Testmodus.</div>
         `;
         document.body.appendChild(panel);
         panel.querySelector('#elf-close').onclick = () => panel.remove();
