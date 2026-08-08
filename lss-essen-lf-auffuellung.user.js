@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LSS Essen LF-Auffüllung
 // @namespace    http://tampermonkey.net/
-// @version      1.01
+// @version      1.02
 // @downloadURL  https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-essen-lf-auffuellung.user.js
 // @updateURL    https://raw.githubusercontent.com/marvjung92/leitstellenspiel/main/lss-essen-lf-auffuellung.user.js
-// @description  Listet Feuerwachen einer konfigurierbaren Leitstelle (🔧-Button) mit weniger als 10 Fahrzeugen, füllt sie per Knopfdruck mit LF 20 (Credits) bis auf 10 Fahrzeuge auf. Wachen mit zu wenig Stellplatz werden dabei zuerst automatisch ausgebaut (Credits).
+// @description  Listet Feuerwachen einer konfigurierbaren Leitstelle (🔧-Button) mit weniger als 10 Fahrzeugen. Umschaltbar: 🚒 nur LF 20 kaufen (Credits) oder 🏗️ nur Wachen mit zu wenig Stellplatz ausbauen (Credits) – getrennt steuerbar per Knopfdruck.
 // @match        https://www.leitstellenspiel.de/*
 // @grant        none
 // @run-at       document-idle
@@ -274,22 +274,51 @@
     }
 
     let fillRunning = false;
-    async function fillAll(panel) {
-        if (fillRunning) return;
-        if (!lastList.length) { window.alert('Erst „⟳ Prüfen" ausführen.'); return; }
-        const needExpand = lastList.filter(b => b.max < CONFIG.targetVehicles);
-        const totalNeed = lastList.reduce((s, b) => s + Math.max(0, CONFIG.targetVehicles - b.count), 0);
-        const msg = `${lastList.length} Wache(n) auf je ${CONFIG.targetVehicles} Fahrzeuge auffüllen – insgesamt ~${totalNeed}× LF 20 kaufen (Credits).`
-            + (needExpand.length ? ` Davon ${needExpand.length} Wache(n) mit zu wenig Stellplatz – werden ZUERST ausgebaut (echte, teils hohe Zusatzkosten in Credits!). Fortfahren?` : ' Fortfahren?');
+    let fillMode = 'lf'; // 'lf' = nur LF kaufen | 'expand' = nur ausbauen
+
+    // Nur LF 20 kaufen – Wachen ohne genug Stellplatz werden übersprungen, NICHT ausgebaut.
+    async function buyAll(panel) {
+        const targets = lastList.filter(b => b.max >= CONFIG.targetVehicles);
+        const noSpace = lastList.length - targets.length;
+        if (!targets.length) { window.alert('Keine Wache mit genug Stellplatz zum Auffüllen – erst „🏗️ Ausbauen" nutzen.'); return; }
+        const totalNeed = targets.reduce((s, b) => s + Math.max(0, CONFIG.targetVehicles - b.count), 0);
+        const msg = `${targets.length} Wache(n) auf je ${CONFIG.targetVehicles} Fahrzeuge auffüllen – insgesamt ~${totalNeed}× LF 20 kaufen (Credits).`
+            + (noSpace ? ` (${noSpace} Wache(n) ohne genug Stellplatz werden übersprungen.)` : '') + ' Fortfahren?';
         if (!window.confirm(msg)) return;
         fillRunning = true;
         const $status = panel.querySelector('#elf-status');
-        let bought = 0, expanded = 0, failed = 0, skipped = 0;
+        let bought = 0, failed = 0;
         try {
-            for (const b of lastList) {
+            for (const b of targets) {
+                const need = CONFIG.targetVehicles - b.count;
+                for (let i = 0; i < need; i++) {
+                    $status.innerHTML = `🚒 Kaufe für ${b.name}… (${i + 1}/${need})`;
+                    const ok = await buyLf20(b.id);
+                    addLog({ buildingId: b.id, name: b.name, text: ok ? 'LF 20 gekauft' : 'Kauf fehlgeschlagen (Credits/Stellplatz voll?)' });
+                    if (ok) bought++; else { failed++; break; } // z.B. Credits alle -> restliche Käufe für diese Wache abbrechen
+                    await new Promise(r => setTimeout(r, CONFIG.buyDelayMs));
+                }
+            }
+            $status.innerHTML = `✅ Fertig: ${bought} LF 20 gekauft${failed ? `, ${failed}× Kauf-Fehlschlag` : ''}.`;
+        } finally {
+            fillRunning = false;
+            await scan(panel);
+        }
+    }
+
+    // Nur ausbauen, bis genug Stellplatz für das Ziel da ist – KEIN Fahrzeugkauf danach.
+    async function expandAll(panel) {
+        const targets = lastList.filter(b => b.max < CONFIG.targetVehicles);
+        if (!targets.length) { window.alert('Alle gelisteten Wachen haben schon genug Stellplatz.'); return; }
+        if (!window.confirm(`${targets.length} Wache(n) ausbauen, bis mindestens ${CONFIG.targetVehicles} Stellplätze vorhanden sind (echte, teils hohe Credits-Kosten!). Kein Fahrzeugkauf in diesem Lauf. Fortfahren?`)) return;
+        fillRunning = true;
+        const $status = panel.querySelector('#elf-status');
+        let expanded = 0, skipped = 0;
+        try {
+            for (const b of targets) {
                 let cur = { level: b.level, count: b.count, max: b.max };
-                // Erst ausbauen, bis genug Stellplatz da ist – Sicherheitsgrenze bei 19 Versuchen
-                // (höchste Stufe im Spiel), damit ein unerwarteter Zustand nicht in eine Endlosschleife läuft.
+                // Sicherheitsgrenze bei 19 Versuchen (höchste Stufe im Spiel), damit ein
+                // unerwarteter Zustand nicht in eine Endlosschleife läuft.
                 let guard = 0;
                 while (cur.max < CONFIG.targetVehicles && guard < 19) {
                     $status.innerHTML = `🏗️ Baue aus… ${b.name} (Stufe ${cur.level} → ${cur.level + 1})`;
@@ -306,22 +335,20 @@
                     cur = next;
                     guard++;
                 }
-                if (!cur || cur.max < CONFIG.targetVehicles) { skipped++; continue; }
-                const need = CONFIG.targetVehicles - cur.count;
-                for (let i = 0; i < need; i++) {
-                    $status.innerHTML = `🚒 Kaufe für ${b.name}… (${i + 1}/${need})`;
-                    const ok = await buyLf20(b.id);
-                    addLog({ buildingId: b.id, name: b.name, text: ok ? 'LF 20 gekauft' : 'Kauf fehlgeschlagen (Credits/Stellplatz voll?)' });
-                    if (ok) bought++; else { failed++; break; } // z.B. Credits alle -> restliche Käufe für diese Wache abbrechen
-                    await new Promise(r => setTimeout(r, CONFIG.buyDelayMs));
-                }
+                if (!cur || cur.max < CONFIG.targetVehicles) skipped++;
             }
-            $status.innerHTML = `✅ Fertig: ${expanded} Ausbau-Schritte, ${bought} LF 20 gekauft`
-                + (failed ? `, ${failed}× Kauf-Fehlschlag` : '') + (skipped ? `, ${skipped} Wache(n) ohne genug Platz übersprungen` : '') + '.';
+            $status.innerHTML = `✅ Fertig: ${expanded} Ausbau-Schritte${skipped ? `, ${skipped} Wache(n) nicht vollständig ausgebaut` : ''}.`;
         } finally {
             fillRunning = false;
-            await scan(panel); // frisch neu prüfen – erledigte Wachen fallen aus der Liste
+            await scan(panel);
         }
+    }
+
+    async function fillAll(panel) {
+        if (fillRunning) return;
+        if (!lastList.length) { window.alert('Erst „⟳ Prüfen" ausführen.'); return; }
+        if (fillMode === 'expand') await expandAll(panel);
+        else await buyAll(panel);
     }
 
     function buildPanel() {
@@ -341,7 +368,11 @@
                     <button id="elf-close" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
                 </div>
             </div>
-            <button id="elf-fill" title="Alle unten gelisteten Wachen auf ${CONFIG.targetVehicles} Fahrzeuge auffüllen" style="width:100%;padding:7px;margin-bottom:8px;background:#a6e3a1;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Alle auffüllen (LF 20, Credits)</button>
+            <div style="display:flex;gap:4px;margin-bottom:6px;">
+                <button class="elf-mode" data-m="lf" style="flex:1;padding:5px;background:#89b4fa;color:#1e1e2e;border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;">🚒 LF kaufen</button>
+                <button class="elf-mode" data-m="expand" style="flex:1;padding:5px;background:#45475a;color:#cdd6f4;border:none;border-radius:5px;font-size:12px;cursor:pointer;">🏗️ Ausbauen</button>
+            </div>
+            <button id="elf-fill" title="Nur LF 20 kaufen – Wachen ohne genug Stellplatz werden übersprungen (nicht ausgebaut)" style="width:100%;padding:7px;margin-bottom:8px;background:#a6e3a1;color:#1e1e2e;border:none;border-radius:6px;font-weight:600;cursor:pointer;">🚒 Alle auffüllen (LF 20, Credits)</button>
             <div id="elf-status" style="margin-bottom:6px;font-size:12px;">Bereit – „⟳ Prüfen" durchsucht die Feuerwachen.</div>
             <div id="elf-list" style="overflow:auto;flex:1;"></div>
             <div style="color:#9399b2;font-size:10px;margin-top:8px;">Nur Feuerwachen (building_type 0) der konfigurierten Leitstelle mit &lt; ${CONFIG.targetVehicles} Fahrzeugen. 🏗️ = zu wenig Stellplatz, wird beim Auffüllen zuerst ausgebaut. Kauf/Ausbau sind echter Credits-Spend, kein Testmodus.</div>
@@ -351,6 +382,21 @@
         panel.querySelector('#elf-scan').onclick = () => scan(panel);
         panel.querySelector('#elf-fill').onclick = () => fillAll(panel);
         panel.querySelector('#elf-log').onclick = () => downloadLog();
+        const $fillBtn = panel.querySelector('#elf-fill');
+        panel.querySelectorAll('.elf-mode').forEach(btn => {
+            btn.onclick = () => {
+                fillMode = btn.getAttribute('data-m');
+                panel.querySelectorAll('.elf-mode').forEach(b => { b.style.background = '#45475a'; b.style.color = '#cdd6f4'; b.style.fontWeight = '400'; });
+                btn.style.background = '#89b4fa'; btn.style.color = '#1e1e2e'; btn.style.fontWeight = '600';
+                if (fillMode === 'expand') {
+                    $fillBtn.textContent = '🏗️ Alle ausbauen (Credits, kein LF-Kauf)';
+                    $fillBtn.title = 'Nur Wachen mit zu wenig Stellplatz ausbauen – kein Fahrzeugkauf in diesem Lauf';
+                } else {
+                    $fillBtn.textContent = '🚒 Alle auffüllen (LF 20, Credits)';
+                    $fillBtn.title = 'Nur LF 20 kaufen – Wachen ohne genug Stellplatz werden übersprungen (nicht ausgebaut)';
+                }
+            };
+        });
         panel.querySelector('#elf-config').onclick = async () => {
             const c = leitstelleConfig();
             const idIn = window.prompt(
